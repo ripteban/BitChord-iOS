@@ -71,9 +71,10 @@ final class MediaCache {
     }()
 
     private static func key(for url: URL) -> String {
-        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        comps?.queryItems = comps?.queryItems?.filter { $0.name != "range" && $0.name != "rn" && $0.name != "rbuf" }
-        return comps?.url?.absoluteString ?? url.absoluteString
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        let kept = (comps.queryItems ?? []).filter { $0.name != "range" && $0.name != "rn" && $0.name != "rbuf" }
+        comps.queryItems = kept
+        return comps.url?.absoluteString ?? url.absoluteString
     }
 
     // MARK: Scheme tasks
