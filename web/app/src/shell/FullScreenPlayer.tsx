@@ -259,11 +259,11 @@ export function FullScreenPlayer() {
       </button>
       {/* The music video's quality, just inside the full-screen button. */}
       {video && (
-        <VideoQuality className={`absolute top-[18px] z-1${hidden}${document.fullscreenEnabled ? ' right-15' : ' right-5'}`} />
+        <VideoQuality className={`absolute top-[calc(18px+env(safe-area-inset-top))] z-1${hidden}${document.fullscreenEnabled ? ' right-15' : ' right-5'}`} />
       )}
       {document.fullscreenEnabled && (
         <button
-          className={`${corner} top-4 right-5`}
+          className={`${corner} top-[calc(16px+env(safe-area-inset-top))] right-5`}
           aria-label={browserFullScreen ? 'Exit full screen' : 'Enter full screen'}
           onClick={toggleBrowserFullScreen}
         >

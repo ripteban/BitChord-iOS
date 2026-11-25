@@ -19,6 +19,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     weak var webView: WKWebView?
     /// The page's state for the native tab bar and mini player (`{kind: "chrome", …}`).
     var onChrome: (([String: Any]) -> Void)?
+    /// The drawer's "Diagnóstico" entry (`{kind: "diagnostics"}`).
+    var onDiagnostics: (() -> Void)?
 
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -40,6 +42,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             switch kind {
+            case "diagnostics":
+                self.onDiagnostics?()
+                replyHandler(nil, nil)
             case "chrome":
                 self.onChrome?(body)
                 replyHandler(nil, nil)

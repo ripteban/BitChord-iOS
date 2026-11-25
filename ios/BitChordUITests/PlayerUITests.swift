@@ -26,8 +26,8 @@ final class PlayerUITests: XCTestCase {
         sleep(1)
         shot(app, "1-mini-player")
 
-        // 1. Tap.
-        mini.tap()
+        // 1. Tap, where a thumb lands: on the artwork and the title, not the button's centre.
+        mini.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.5)).tap()
         let close = app.webViews.buttons["Close"]
         XCTAssertTrue(close.waitForExistence(timeout: 10), "tapping the mini player didn't open the full player")
         XCTAssertFalse(app.webViews.staticTexts["The player couldn’t open"].exists, "the full player failed to render")

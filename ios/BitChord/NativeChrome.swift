@@ -321,9 +321,23 @@ final class NativeChromeView: UIView {
         let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipedUp))
         swipe.direction = .up
         mini.addGestureRecognizer(swipe)
+        // A tap anywhere on the capsule (the row of artwork and titles sits over the
+        // open button and would swallow it); play and next keep their own taps,
+        // since a control's action wins over a gesture on its superview.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tappedMini(_:)))
+        tap.cancelsTouchesInView = false
+        mini.addGestureRecognizer(tap)
     }
 
     @objc private func swipedUp() {
+        onAction?("openPlayer", nil)
+    }
+
+    @objc private func tappedMini(_ gesture: UITapGestureRecognizer) {
+        for button in [playButton, nextButton] where button.bounds.contains(gesture.location(in: button)) {
+            return
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         onAction?("openPlayer", nil)
     }
 

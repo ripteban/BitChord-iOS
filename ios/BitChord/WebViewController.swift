@@ -1,3 +1,4 @@
+import AVFoundation
 import SafariServices
 import UIKit
 import WebKit
@@ -88,6 +89,15 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         chrome.onAction = { [weak self] action, argument in
             self?.chromeAction(action, argument)
         }
+        bridge.onDiagnostics = { [weak self] in self?.showDiagnostics() }
+        NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+            Diag.log("audio session interruption \(type == .began ? "began" : "ended")")
+            if type == .ended { MainActor.assumeIsolated { self?.wakeAudio() } }
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.wakeAudio() }
+        }
         bridge.onChrome = { [weak self] state in
             self?.chrome.apply(state)
         }
@@ -135,6 +145,17 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
                 NSLog("[BitChord] ProMotion: page rendering no longer capped near 60 fps")
             }
         }
+    }
+
+    /// The audio session back on, and the page's Web Audio resumed (inject.js).
+    private func wakeAudio() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            Diag.log("audio session: \(error.localizedDescription)")
+        }
+        webView.evaluateJavaScript("window.__bitchordWakeAudio && window.__bitchordWakeAudio()", completionHandler: nil)
     }
 
     // MARK: Diagnostics: shake the phone (or hold the BitChord capsule)

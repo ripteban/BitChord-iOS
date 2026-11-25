@@ -123,6 +123,33 @@ ${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
     return play.apply(this, args);
   };
 
+  // ---- Web Audio: iOS suspends contexts (no gesture, background, interruptions).
+  // A suspended context routing the player (Automix) plays silence while the
+  // track's time still runs. Every context is resumed on any touch, on any
+  // media play, and when the app comes back (native calls __bitchordWakeAudio).
+  const contexts = new Set();
+  const NativeAudioContext = window.AudioContext;
+  if (NativeAudioContext) {
+    window.AudioContext = class extends NativeAudioContext {
+      constructor(...args) {
+        super(...args);
+        contexts.add(this);
+      }
+    };
+  }
+  const wakeAudio = () => {
+    for (const ctx of contexts) {
+      if (ctx.state !== 'running' && ctx.state !== 'closed') ctx.resume().catch(() => {});
+    }
+  };
+  window.__bitchordWakeAudio = wakeAudio;
+  for (const type of ['touchend', 'click']) document.addEventListener(type, wakeAudio, { capture: true, passive: true });
+  const nativePlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function (...args) {
+    wakeAudio();
+    return nativePlay.apply(this, args);
+  };
+
   // ---- network --------------------------------------------------------------
   const SKIP_HOSTS = /(^|\.)(fonts\.googleapis\.com|fonts\.gstatic\.com)$/i;
   const proxyURL = (url) => `${ORIGIN}/__net/?u=${encodeURIComponent(url)}`;

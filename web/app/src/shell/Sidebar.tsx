@@ -179,6 +179,22 @@ export function Sidebar() {
           </PrefetchNavLink>
           )}
           <AccountButton />
+          {isIOSApp() && (
+            <button
+              className={item}
+              onClick={() => {
+                close();
+                (window as Window & { webkit?: { messageHandlers?: { bitchord?: { postMessage: (m: unknown) => Promise<unknown> } } } }).webkit?.messageHandlers?.bitchord
+                  ?.postMessage({ kind: 'diagnostics' })
+                  .catch(() => undefined);
+              }}
+            >
+              <span className={icon}>
+                <Settings size={17} strokeWidth={1.9} />
+              </span>
+              <span className={navLabel}>Diagnóstico</span>
+            </button>
+          )}
           <div className="flex items-center justify-between">
             {isIOSApp() ? (
               <span />
