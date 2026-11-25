@@ -130,6 +130,15 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
                 NSLog("[BitChord][autotest] %@: %@", label, String(describing: result ?? error))
             }
         }
+        let iframeTest = #"""
+        fetch('https://www.youtube.com/iframe_api').then(async r => {
+          const t = await r.text();
+          console.warn('[iframe_api test] status', r.status, 'type', r.headers.get('content-type'), 'len', t.length,
+            'match', t.includes('player' + String.fromCharCode(92) + '/'), 'head', t.slice(0, 400));
+        }).catch(e => console.error('[iframe_api test] failed', String(e)));
+        'started'
+        """#
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { eval(iframeTest, "iframe@3s") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { eval(probe, "probe@6s") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { eval(click, "click@8s") }
         for t in [20.0, 40.0, 90.0] {

@@ -29,6 +29,8 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
     private var byTask: [Int: WKURLSchemeTask] = [:]
     private var stopped = Set<ObjectIdentifier>()
     private var dataTaskFor: [ObjectIdentifier: URLSessionDataTask] = [:]
+    /// Bytes received per proxy task, for the debug log.
+    private var received: [Int: Int] = [:]
 
     // MARK: WKURLSchemeHandler
 
@@ -204,15 +206,23 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
             httpVersion: "HTTP/1.1",
             headerFields: NetRules.pageHeaders(from: http)
         )!
+        NSLog("[BitChord][net] %d %@ %@ enc=%@ type=%@", http.statusCode, dataTask.originalRequest?.httpMethod ?? "?",
+              String((dataTask.originalRequest?.url?.absoluteString ?? "").prefix(110)),
+              http.value(forHTTPHeaderField: "Content-Encoding") ?? "-", http.value(forHTTPHeaderField: "Content-Type") ?? "-")
         task.didReceive(pageResponse)
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        received[dataTask.taskIdentifier, default: 0] += data.count
         live(dataTask)?.didReceive(data)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let bytes = received.removeValue(forKey: task.taskIdentifier) ?? 0
+        if error != nil || bytes < 200_000 {
+            NSLog("[BitChord][net] done %@ bytes=%d err=%@", String((task.originalRequest?.url?.absoluteString ?? "").prefix(90)), bytes, String(describing: error))
+        }
         if let schemeTask = live(task) {
             if let error {
                 schemeTask.didFailWithError(error)
