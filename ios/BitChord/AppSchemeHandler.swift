@@ -39,7 +39,8 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
             urlSchemeTask.didFailWithError(URLError(.badURL))
             return
         }
-        if url.path.hasPrefix("/__net/") {
+        // URL.path drops the trailing slash: "/__net/?u=…" arrives as "/__net".
+        if url.path == "/__net" || url.path.hasPrefix("/__net/") {
             startProxy(urlSchemeTask, url: url)
         } else {
             serveFile(urlSchemeTask, url: url)
