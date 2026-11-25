@@ -39,6 +39,8 @@ final class YouTubeAuth {
         let email: String?
         let avatarUrl: String?
         let channels: [Channel]
+        /// responseContext.mainAppWebResponseContext.datasyncId of this login's answers.
+        var dataSyncId: String? = nil
     }
 
     struct Identity {
@@ -230,8 +232,11 @@ final class YouTubeAuth {
     private func readLogin(_ authUser: String) async -> (account: Account?, why: String?) {
         let identity = Identity(authUser: authUser, pageId: nil)
         let header: [String: Any]
+        var sync: String?
         do {
             let menu = try await musicApi("account/account_menu", identity: identity)
+            // Every signed-in InnerTube answer names the account's DataSync ID.
+            sync = Self.findString(menu, key: "datasyncId")
             guard let found = Self.renderers(menu, key: "activeAccountHeaderRenderer").first else {
                 return (nil, "account_menu: YouTube answered as if signed out")
             }
@@ -253,7 +258,7 @@ final class YouTubeAuth {
                 brand: false, authUser: authUser, pageId: nil, selectedOnWeb: true
             )]
         }
-        return (Account(authUser: authUser, name: name, email: email, avatarUrl: avatar, channels: channels), nil)
+        return (Account(authUser: authUser, name: name, email: email, avatarUrl: avatar, channels: channels, dataSyncId: sync), nil)
     }
 
     /// The login YouTube Music's own page uses (ytcfg SESSION_INDEX).
@@ -319,6 +324,15 @@ final class YouTubeAuth {
     /// its first part is what YouTube binds a signed-in session's PO tokens to.
     private func dataSyncId(for channel: Channel) async -> String? {
         if let known = dataSyncIds[channel.id] { return known }
+        // First choice: what InnerTube itself said for this login (account_menu).
+        if let raw = cache?.list.first(where: { $0.authUser == channel.authUser })?.dataSyncId {
+            let id = String(raw.replacingOccurrences(of: #"\u007c"#, with: "|").split(separator: "|").first ?? "")
+            if !id.isEmpty {
+                dataSyncIds[channel.id] = id
+                Diag.log("account binding: \(id.prefix(4))… (from InnerTube)")
+                return id
+            }
+        }
         guard let (data, _) = try? await signedRequest(
             url: URL(string: Self.musicOrigin + "/")!,
             headers: ["Accept": "text/html"],

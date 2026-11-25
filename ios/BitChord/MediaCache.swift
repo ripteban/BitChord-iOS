@@ -245,9 +245,11 @@ final class MediaCache {
         }
         if waiter.offset > end {
             waiter.task.didFinish()
-        } else if let failure = entry.failure {
-            fail(waiter, failure)
         }
+        // A failed download never fails a request already answered: an error in
+        // the middle of the file makes AVFoundation drop the whole track (silence).
+        // The request stays open; the player plays every byte it got and waits
+        // at the point the stream was refused, until it lets the request go.
     }
 
     private func fail(_ waiter: Waiter, _ failure: (status: Int, message: String)) {
