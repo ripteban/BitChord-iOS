@@ -32,3 +32,24 @@ targets:
         INFOPLIST_FILE: BitChord/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_BITCODE: "NO"
+  BitChordUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BitChordUITests
+    dependencies:
+      - target: BitChord
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.music.bitchord.ios.uitests
+        TEST_TARGET_NAME: BitChord
+        GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  BitChord:
+    build:
+      targets:
+        BitChord: all
+        BitChordUITests: [test]
+    test:
+      targets:
+        - BitChordUITests
