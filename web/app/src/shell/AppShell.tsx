@@ -12,7 +12,7 @@ import { isMobileBrowser } from '@/lib/platform';
 import { useUi } from '@/state/ui';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { Banner, bannerButtonClass } from './Banner';
-import { MobilePlayer } from './MobilePlayer';
+import { MobilePlayer, PlayerErrorBoundary } from './MobilePlayer';
 import { MobileTopBar } from './MobileTopBar';
 import { PlayerBar } from './PlayerBar';
 import { SidePanel } from './SidePanel';
@@ -45,6 +45,7 @@ export function AppShell() {
   const bannerDismissed = useUi((s) => s.installBannerDismissed);
   const dismissBanner = useUi((s) => s.dismissInstallBanner);
   const fullScreen = useUi((s) => s.fullScreen);
+  const setFullScreen = useUi((s) => s.setFullScreen);
 
   let banner = null;
   if (mobile) {
@@ -96,9 +97,11 @@ export function AppShell() {
       </div>
       {banner}
       {fullScreen && (
-        <Suspense fallback={null}>
-          <FullScreenPlayer />
-        </Suspense>
+        <PlayerErrorBoundary onClose={() => setFullScreen(false)}>
+          <Suspense fallback={null}>
+            <FullScreenPlayer />
+          </Suspense>
+        </PlayerErrorBoundary>
       )}
     </div>
   );

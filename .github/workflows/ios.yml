@@ -62,6 +62,9 @@ jobs:
         working-directory: ios
         continue-on-error: true
         run: |
+          # idb: real touches in the simulator (taps the mini player like a finger would).
+          brew tap facebook/fb >/dev/null && brew install idb-companion >/dev/null || true
+          python3 -m pip install --break-system-packages fb-idb >/dev/null 2>&1 || python3 -m pip install fb-idb >/dev/null 2>&1 || true
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
           echo "Simulator $UDID"
           xcrun simctl boot "$UDID"
@@ -70,14 +73,24 @@ jobs:
           xcrun simctl install "$UDID" "$APP"
           mkdir -p smoke
           xcrun simctl launch --console-pty "$UDID" com.music.bitchord.ios -route /debug -autotest > smoke/console.log 2>&1 &
-          sleep 30; xcrun simctl io "$UDID" screenshot smoke/30s.png
-          sleep 30; xcrun simctl io "$UDID" screenshot smoke/60s.png
-          sleep 40; xcrun simctl io "$UDID" screenshot smoke/100s.png
+          sleep 22; xcrun simctl io "$UDID" screenshot smoke/1-mini.png
+          # Where the mini player is, from the app's own probe at 20s (CSS px = points).
+          XY=$(grep -o '"mini":{"x":[0-9]*,"y":[0-9]*}' smoke/console.log | tail -1 | grep -o '[0-9]\+' | tr '\n' ' ')
+          echo "mini player at: $XY"
+          if [ -n "$XY" ] && command -v idb >/dev/null; then
+            idb connect "$UDID" >/dev/null 2>&1 || true
+            idb ui tap --udid "$UDID" $XY && echo "tapped mini player"
+          else
+            echo "no idb or no mini player position"
+          fi
+          sleep 8; xcrun simctl io "$UDID" screenshot smoke/2-after-tap.png
+          sleep 20; xcrun simctl io "$UDID" screenshot smoke/3-later.png
+          sleep 45
           xcrun simctl launch "$UDID" com.music.bitchord.ios -route /search >/dev/null 2>&1 || true
           sleep 10; xcrun simctl io "$UDID" screenshot smoke/home.png
-          grep -E "BitChord" smoke/console.log | grep -vE "js:log\] \[track" | head -300 || true
+          grep -E "BitChord\]" smoke/console.log | grep -vE "\[net\]" | head -150 || true
           echo "----- autotest -----"
-          grep autotest smoke/console.log || true
+          grep -E "autotest|translate test|iframe_api test|ProMotion|player failed" smoke/console.log || true
 
       - uses: actions/upload-artifact@v4
         if: always()

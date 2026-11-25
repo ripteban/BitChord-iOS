@@ -13,22 +13,58 @@
   const ORIGIN = location.origin;
   const CHANNEL = 'bitchord-bridge';
 
-  // ---- console -> Xcode/simulator log (debugging) ---------------------------
-  for (const level of ['log', 'info', 'warn', 'error']) {
-    const original = console[level].bind(console);
-    console[level] = (...args) => {
-      original(...args);
-      try {
-        const message = args
-          .map((a) => (a instanceof Error ? `${a.name}: ${a.message}\n${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
-          .join(' ')
-          .slice(0, 2000);
-        native.postMessage({ kind: 'log', level, message }).catch(() => {});
-      } catch {}
-    };
+  // ---- console -> Xcode/simulator log (diagnostic builds only: it costs time) --
+  if (window.__bitchordDebug) {
+    for (const level of ['log', 'info', 'warn', 'error']) {
+      const original = console[level].bind(console);
+      console[level] = (...args) => {
+        original(...args);
+        try {
+          const message = args
+            .map((a) => (a instanceof Error ? `${a.name}: ${a.message}
+${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
+            .join(' ')
+            .slice(0, 2000);
+          native.postMessage({ kind: 'log', level, message }).catch(() => {});
+        } catch {}
+      };
+    }
+    window.addEventListener('error', (e) => console.error('[uncaught]', e.message, e.filename + ':' + e.lineno));
+    window.addEventListener('unhandledrejection', (e) => console.error('[unhandled rejection]', e.reason));
   }
-  window.addEventListener('error', (e) => console.error('[uncaught]', e.message, e.filename + ':' + e.lineno));
-  window.addEventListener('unhandledrejection', (e) => console.error('[unhandled rejection]', e.reason));
+
+  // ---- an app, not a page: no zoom, no text selection or callouts on chrome ----
+  const VIEWPORT = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover';
+  const lockViewport = () => {
+    let meta = document.querySelector('meta[name=viewport]');
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.name = 'viewport';
+      (document.head || document.documentElement).appendChild(meta);
+    }
+    if (meta.content !== VIEWPORT) meta.content = VIEWPORT;
+  };
+  const APP_CSS = `
+    html { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    * { -webkit-tap-highlight-color: transparent; }
+    body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; overscroll-behavior: none; }
+    input, textarea, select, [contenteditable=true] { -webkit-user-select: text; user-select: text; font-size: max(16px, 1em); }
+    img { -webkit-user-drag: none; -webkit-touch-callout: none; }
+  `;
+  const addAppStyle = () => {
+    if (document.getElementById('bitchord-ios-style')) return;
+    const style = document.createElement('style');
+    style.id = 'bitchord-ios-style';
+    style.textContent = APP_CSS;
+    (document.head || document.documentElement).appendChild(style);
+  };
+  lockViewport();
+  addAppStyle();
+  document.addEventListener('DOMContentLoaded', () => { lockViewport(); addAppStyle(); });
+  // Safari-style pinch gestures (gesturestart) never zoom the app.
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+  }
 
   // ---- media: iPhone WebKit has ManagedMediaSource, not MediaSource ----------
   // AAC (itag 140) is what plays reliably there; WebM/Opus is declined so both
@@ -82,9 +118,26 @@
     return response;
   };
 
+  // Lyrics translation: the lyrics view asks Google for English (tl=en, hard-coded
+  // in am-lyrics). Translate into Spanish instead; romanization (dt=rm) is left alone.
+  const TRANSLATE_TO = 'es';
+  const retarget = (raw) => {
+    if (!/^https:\/\/translate\.googleapis\.com\/translate_a\/single/.test(raw)) return raw;
+    const u = new URL(raw);
+    if (u.searchParams.getAll('dt').includes('t')) u.searchParams.set('tl', TRANSLATE_TO);
+    return u.href;
+  };
+
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async function (input, init) {
-    const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
+    let rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input && input.url;
+    if (rawUrl && rawUrl.includes('translate.googleapis.com')) {
+      const target = retarget(new URL(rawUrl, location.href).href);
+      if (target !== rawUrl) {
+        input = typeof input === 'string' || input instanceof URL ? target : new Request(target, input);
+        rawUrl = target;
+      }
+    }
     if (!rawUrl || !shouldProxy(rawUrl)) return nativeFetch(input, init);
 
     const request = new Request(input, init);
@@ -118,7 +171,7 @@
     });
     if (request.signal && request.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     const status = result.status;
-    const body = NULL_BODY.has(status) ? null : fromBase64(result.body);
+    const body = NULL_BODY.has(status) ? null : typeof result.text === 'string' ? result.text : fromBase64(result.body);
     return withUrl(
       new Response(body, { status, statusText: result.statusText || '', headers: result.headers || {} }),
       result.url || request.url,
@@ -161,5 +214,5 @@
     window.postMessage(reply && reply.ok ? { ...envelope, ok: true, result: reply.result } : { ...envelope, ok: false, error: (reply && reply.error) || { code: 'internal', message: 'no reply' } }, '*');
   });
 
-  console.info('[BitChord iOS] shim ready at', ORIGIN, 'secure:', window.isSecureContext, 'MMS:', !!window.ManagedMediaSource);
+  if (window.__bitchordDebug) console.info('[BitChord iOS] shim ready at', ORIGIN, 'secure:', window.isSecureContext, 'MMS:', !!window.ManagedMediaSource);
 })();

@@ -8,7 +8,8 @@ import { GRID, meshPalette, type Rgb } from '@/lib/meshPalette';
 const backdrop =
   'absolute inset-0 -z-1 overflow-hidden bg-[#343438] data-fallback:after:absolute data-fallback:after:inset-0 data-fallback:after:bg-grain data-fallback:after:opacity-6';
 
-const FRAME_MS = 1000 / 30;
+// 60 fps: smooth on phones with ProMotion; the mesh is a handful of blobs.
+const FRAME_MS = 1000 / 60;
 const FADE_MS = 1200;
 /** Before the artwork is read, and when it can't be: a neutral dark grey. */
 const FALLBACK: Rgb[] = Array.from({ length: GRID * GRID }, () => [52, 52, 56]);

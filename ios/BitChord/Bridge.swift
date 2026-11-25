@@ -7,49 +7,75 @@ import WebKit
 ///
 /// Message shapes (from inject.js):
 /// - `{kind: "bridge", method, params}` → `{ok: true, result}` | `{ok: false, error: {code, message}}`
-/// - `{kind: "fetch", url, method, headers, body?}` (body base64) → `{status, statusText, headers, body, url}`
-/// - `{kind: "log", level, message}` → nothing (console forwarding, for debugging)
+/// - `{kind: "fetch", url, method, headers, body?}` (body base64) →
+///   `{status, statusText, headers, url, text?}` or `{…, body}` (base64) for binary responses
+/// - `{kind: "log", level, message}` → nothing (console forwarding, debug builds only)
+@MainActor
 final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     static let name = "bitchord"
-    static let version = "ios-1.0"
+    static let version = "ios-1.1"
+
+    /// The page, for pushing events (`yt.authState`) the way the extension's port does.
+    weak var webView: WKWebView?
 
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.urlCache = nil
+        config.httpMaximumConnectionsPerHost = 8
         return URLSession(configuration: config)
     }()
 
-    func userContentController(
+    nonisolated func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage,
         replyHandler: @escaping (Any?, String?) -> Void
     ) {
-        guard let body = message.body as? [String: Any], let kind = body["kind"] as? String else {
-            replyHandler(nil, "bad message")
-            return
-        }
-        switch kind {
-        case "log":
-            NSLog("[BitChord][js:%@] %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
-            replyHandler(nil, nil)
-        case "fetch":
-            Task { @MainActor in
-                do {
-                    replyHandler(try await self.rawFetch(body), nil)
-                } catch {
-                    replyHandler(nil, error.localizedDescription)
+        MainActor.assumeIsolated {
+            guard let body = message.body as? [String: Any], let kind = body["kind"] as? String else {
+                replyHandler(nil, "bad message")
+                return
+            }
+            switch kind {
+            case "log":
+                NSLog("[BitChord][js:%@] %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
+                replyHandler(nil, nil)
+            case "fetch":
+                Task {
+                    do {
+                        replyHandler(try await self.rawFetch(body), nil)
+                    } catch {
+                        replyHandler(nil, error.localizedDescription)
+                    }
                 }
+            case "bridge":
+                let method = body["method"] as? String ?? ""
+                let params = body["params"] as? [String: Any] ?? [:]
+                Task { replyHandler(await self.handle(method: method, params: params), nil) }
+            default:
+                replyHandler(nil, "unknown kind \(kind)")
             }
-        case "bridge":
-            let method = body["method"] as? String ?? ""
-            let params = body["params"] as? [String: Any] ?? [:]
-            Task { @MainActor in
-                replyHandler(await self.handle(method: method, params: params), nil)
-            }
-        default:
-            replyHandler(nil, "unknown kind \(kind)")
+        }
+    }
+
+    // MARK: Events
+
+    func broadcast(event: String, data: Any) {
+        let message: [String: Any] = [
+            "channel": "bitchord-bridge",
+            "direction": "event",
+            "payload": ["event": event, "data": data],
+        ]
+        guard let json = try? JSONSerialization.data(withJSONObject: message), let text = String(data: json, encoding: .utf8) else { return }
+        webView?.evaluateJavaScript("window.postMessage(\(text), '*')", completionHandler: nil)
+    }
+
+    /// After the sign-in sheet closes: re-read the accounts and tell the page.
+    func signInFinished() {
+        Task {
+            YouTubeAuth.shared.invalidate()
+            broadcast(event: "yt.authState", data: await YouTubeAuth.shared.authState(refresh: true))
         }
     }
 
@@ -62,6 +88,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     private func handle(method: String, params: [String: Any]) async -> [String: Any] {
+        let auth = YouTubeAuth.shared
         do {
             switch method {
             case "ping":
@@ -69,11 +96,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                     "version": Self.version,
                     "protocol": 1,
                     "browser": "firefox",
-                    "capabilities": ["yt", "lyrics"],
+                    "capabilities": ["yt", "yt.auth", "yt.stats", "lyrics"],
                 ])
             case "yt.fetch":
                 if params["auth"] as? Bool == true {
-                    return fail("unauthenticated", "Signing in to YouTube Music isn't available in the iOS app yet.")
+                    return ok(try await auth.signedYtFetch(params))
                 }
                 let url = params["url"] as? String ?? ""
                 guard url.hasPrefix("https://www.youtube.com/api/jnn/") else {
@@ -81,14 +108,15 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 }
                 return ok(try await httpExchange(params, youtubeOriginForApi: true))
             case "yt.authState":
-                return ok([
-                    "browserSignedIn": false,
-                    "connected": false,
-                    "signedIn": false,
-                    "accounts": [Any](),
-                    "active": NSNull(),
-                    "problem": NSNull(),
-                ])
+                return ok(await auth.authState(refresh: params["refresh"] as? Bool == true))
+            case "yt.selectChannel":
+                let state = try await auth.selectChannel(params["channelId"] as? String ?? "")
+                broadcast(event: "yt.authState", data: state)
+                return ok(state)
+            case "yt.setConnected":
+                let state = await auth.setConnected(params["connected"] as? Bool == true)
+                broadcast(event: "yt.authState", data: state)
+                return ok(state)
             case "lyrics.fetch":
                 return ok(try await httpExchange(params, youtubeOriginForApi: false))
             case "lyrics.permissions":
@@ -99,11 +127,31 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             default:
                 return fail("unsupported", "\(method) isn't available in the iOS app.")
             }
+        } catch is YouTubeAuth.SignedOut {
+            return fail("unauthenticated", "Not signed in to YouTube Music.")
         } catch let error as URLError {
             return fail("network", error.localizedDescription)
         } catch {
             return fail("internal", error.localizedDescription)
         }
+    }
+
+    /// An `HttpResponse` (bridge protocol) for a finished exchange.
+    static func serialise(data: Data, response: HTTPURLResponse, fallbackURL: String) -> [String: Any] {
+        var headers: [String: String] = [:]
+        for (k, v) in response.allHeaderFields {
+            if let k = k as? String, let v = v as? String { headers[k.lowercased()] = v }
+        }
+        let type = headers["content-type"] ?? ""
+        let textual = type.range(of: "json|text|javascript|xml", options: .regularExpression) != nil
+        let text = textual ? String(data: data, encoding: .utf8) : nil
+        return [
+            "status": response.statusCode,
+            "headers": headers,
+            "url": response.url?.absoluteString ?? fallbackURL,
+            "bodyEncoding": text != nil ? "text" : "base64",
+            "body": text ?? data.base64EncodedString(),
+        ]
     }
 
     /// An `HttpRequest` from the bridge protocol, answered as an `HttpResponse`.
@@ -123,24 +171,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             youtubeOriginForApi: youtubeOriginForApi
         )
         let (data, response) = try await session.data(for: request)
-        let http = response as! HTTPURLResponse
-        var headers: [String: String] = [:]
-        for (k, v) in http.allHeaderFields {
-            if let k = k as? String, let v = v as? String { headers[k.lowercased()] = v }
-        }
-        let type = headers["content-type"] ?? ""
-        let textual = type.range(of: "json|text|javascript|xml", options: .regularExpression) != nil
-        let text = textual ? String(data: data, encoding: .utf8) : nil
-        return [
-            "status": http.statusCode,
-            "headers": headers,
-            "url": http.url?.absoluteString ?? urlString,
-            "bodyEncoding": text != nil ? "text" : "base64",
-            "body": text ?? data.base64EncodedString(),
-        ]
+        return Self.serialise(data: data, response: response as! HTTPURLResponse, fallbackURL: urlString)
     }
 
     /// The page's own non-GET cross-origin fetches (InnerTube POSTs and the like).
+    /// Text bodies come back as text: no base64 round trip for the large JSON answers.
     private func rawFetch(_ body: [String: Any]) async throws -> [String: Any] {
         guard let urlString = body["url"] as? String, let url = URL(string: urlString) else {
             throw URLError(.badURL)
@@ -154,12 +189,18 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         )
         let (data, response) = try await session.data(for: request)
         let http = response as! HTTPURLResponse
-        return [
+        var result: [String: Any] = [
             "status": http.statusCode,
             "statusText": HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
             "headers": NetRules.pageHeaders(from: http),
             "url": http.url?.absoluteString ?? urlString,
-            "body": data.base64EncodedString(),
         ]
+        let type = http.value(forHTTPHeaderField: "Content-Type") ?? ""
+        if type.range(of: "json|text|javascript|xml", options: .regularExpression) != nil, let text = String(data: data, encoding: .utf8) {
+            result["text"] = text
+        } else {
+            result["body"] = data.base64EncodedString()
+        }
+        return result
     }
 }

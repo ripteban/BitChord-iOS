@@ -207,9 +207,9 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
             httpVersion: "HTTP/1.1",
             headerFields: NetRules.pageHeaders(from: http)
         )!
-        NSLog("[BitChord][net] %d %@ %@ enc=%@ type=%@", http.statusCode, dataTask.originalRequest?.httpMethod ?? "?",
+        if WebViewController.diagnostics { NSLog("[BitChord][net] %d %@ %@ enc=%@ type=%@", http.statusCode, dataTask.originalRequest?.httpMethod ?? "?",
               String((dataTask.originalRequest?.url?.absoluteString ?? "").prefix(110)),
-              http.value(forHTTPHeaderField: "Content-Encoding") ?? "-", http.value(forHTTPHeaderField: "Content-Type") ?? "-")
+              http.value(forHTTPHeaderField: "Content-Encoding") ?? "-", http.value(forHTTPHeaderField: "Content-Type") ?? "-") }
         task.didReceive(pageResponse)
         completionHandler(.allow)
     }
@@ -221,7 +221,7 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let bytes = received.removeValue(forKey: task.taskIdentifier) ?? 0
-        if error != nil || bytes < 200_000 {
+        if WebViewController.diagnostics && (error != nil || bytes < 200_000) {
             NSLog("[BitChord][net] done %@ bytes=%d err=%@", String((task.originalRequest?.url?.absoluteString ?? "").prefix(90)), bytes, String(describing: error))
         }
         if let schemeTask = live(task) {
