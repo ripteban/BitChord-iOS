@@ -33,7 +33,13 @@ function extraHeaders(url, youtubeOriginForApi = false) {
   if (u.host === 'www.youtube.com' && u.pathname.startsWith('/youtubei/')) return imp('https://www.youtube.com');
   if (u.host === 'www.youtube.com' && u.pathname.startsWith('/api/jnn/')) return youtubeOriginForApi ? imp('https://www.youtube.com', false) : {};
   if (u.host === 's.youtube.com') return imp('https://music.youtube.com', false);
-  if (u.host.endsWith('googlevideo.com')) return u.search.includes('c=VISIONOS') ? {} : imp('https://www.youtube.com', false);
+  if (u.host.endsWith('googlevideo.com')) {
+    const c = u.searchParams.get('c') ?? '';
+    if (c === 'VISIONOS') return {};
+    if (c === 'ANDROID_VR') return { 'User-Agent': 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip' };
+    if (c.startsWith('TVHTML5')) return { ...imp('https://www.youtube.com', false), 'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version' };
+    return imp('https://www.youtube.com', false);
+  }
   if (u.host === 'amp-api.music.apple.com') return imp('https://music.apple.com', false);
   if (u.host.endsWith('musixmatch.com')) return { Cookie: 'mxm_bab=AB' };
   return {};
@@ -41,8 +47,12 @@ function extraHeaders(url, youtubeOriginForApi = false) {
 
 async function upstream(url, method, headers, body, ytApi = false) {
   const h = {};
-  for (const [k, v] of Object.entries(headers ?? {})) if (!DROPPED.has(k.toLowerCase())) h[k] = v;
-  h['User-Agent'] = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+  let ua = null;
+  for (const [k, v] of Object.entries(headers ?? {})) {
+    if (k.toLowerCase() === 'user-agent') { if (!/Chrome|Electron/.test(String(v))) ua = v; continue; }
+    if (!DROPPED.has(k.toLowerCase())) h[k] = v;
+  }
+  h['User-Agent'] = ua ?? 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
   Object.assign(h, extraHeaders(url, ytApi));
   return fetch(url, { method, headers: h, body: method === 'GET' || method === 'HEAD' ? undefined : body, redirect: 'follow' });
 }
@@ -83,6 +93,14 @@ async function bridge(method, params) {
         if (!String(params.url).startsWith('https://www.youtube.com/api/jnn/')) return fail('forbidden', 'nope');
         return ok(await httpExchange(params, true));
       case 'yt.authState': return ok({ browserSignedIn: false, connected: false, signedIn: false, accounts: [], active: null, problem: null });
+      case 'ios.http':
+        if (params.auth) return fail('unauthenticated', 'no account in the desktop harness');
+        return ok(await httpExchange(params, false));
+      case 'ios.probe': {
+        const res = await upstream(params.url, 'GET', { Range: `bytes=${params.offset}-${params.offset + 1023}` });
+        const buf = await res.arrayBuffer();
+        return ok({ status: res.status, bytes: buf.byteLength });
+      }
       case 'lyrics.fetch': return ok(await httpExchange(params, false));
       case 'lyrics.permissions': return ok({ granted: params.origins ?? [] });
       case 'lyrics.requestPermissions': return ok({});

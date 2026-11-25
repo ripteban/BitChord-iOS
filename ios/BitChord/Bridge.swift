@@ -128,6 +128,29 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 let state = await auth.setConnected(params["connected"] as? Bool == true)
                 broadcast(event: "yt.authState", data: state)
                 return ok(state)
+            case "ios.http":
+                // The iOS resolver's player requests, as any InnerTube client (iosResolver.ts).
+                let url = params["url"] as? String ?? ""
+                guard url.hasPrefix("https://www.youtube.com/youtubei/v1/") || url.hasPrefix("https://music.youtube.com/youtubei/v1/") else {
+                    return fail("forbidden", "ios.http doesn't serve \(url)")
+                }
+                if params["auth"] as? Bool == true {
+                    return ok(try await auth.signedYtFetch(params))
+                }
+                return ok(try await httpExchange(params, youtubeOriginForApi: false))
+            case "ios.probe":
+                // Does this media URL serve bytes at `offset`? (Past the point a refused stream stops.)
+                guard let text = params["url"] as? String, let url = URL(string: text),
+                      url.host?.hasSuffix("googlevideo.com") == true
+                else { return fail("forbidden", "ios.probe is for media URLs") }
+                let offset = params["offset"] as? Int ?? 0
+                var request = NetRules.upstreamRequest(url: url, method: "GET", headers: [:], body: nil)
+                request.setValue("bytes=\(offset)-\(offset + 1023)", forHTTPHeaderField: "Range")
+                request.timeoutInterval = 12
+                let (data, response) = try await session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status != 206 && status != 200 { Diag.log("probe \(status) at byte \(offset) \(AppSchemeHandler.short(url))") }
+                return ok(["status": status, "bytes": data.count])
             case "lyrics.fetch":
                 return ok(try await httpExchange(params, youtubeOriginForApi: false))
             case "lyrics.permissions":

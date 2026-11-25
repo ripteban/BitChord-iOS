@@ -38,9 +38,22 @@ enum NetRules {
             return impersonate("https://music.youtube.com", xOrigin: false)
         }
         if host.hasSuffix("googlevideo.com") {
-            // VISIONOS URLs go with no Origin or Referer at all (rule 7).
-            if query.contains("c=VISIONOS") { return [:] }
-            return impersonate("https://www.youtube.com", xOrigin: false)
+            // Media is fetched as the client that minted the URL (its `c` parameter) would.
+            let client = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "c" }?.value ?? ""
+            _ = query
+            switch client {
+            case "VISIONOS":
+                // No Origin or Referer at all (rule 7).
+                return [:]
+            case "ANDROID_VR":
+                return ["User-Agent": "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"]
+            case "TVHTML5", "TVHTML5_SIMPLY", "TVHTML5_SIMPLY_EMBEDDED_PLAYER":
+                var headers = impersonate("https://www.youtube.com", xOrigin: false)
+                headers["User-Agent"] = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+                return headers
+            default:
+                return impersonate("https://www.youtube.com", xOrigin: false)
+            }
         }
         if host == "amp-api.music.apple.com" {
             return impersonate("https://music.apple.com", xOrigin: false)

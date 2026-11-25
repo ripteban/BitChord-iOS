@@ -1,11 +1,12 @@
 import { SabrStreamingAdapter } from 'googlevideo/sabr-streaming-adapter';
 import { buildSabrFormat } from 'googlevideo/utils';
 import shaka from 'shaka-player/dist/shaka-player.compiled';
-import { Constants, Utils, YT, type Innertube } from 'youtubei.js/web';
+import { Constants, Utils, YT, type Innertube, type Misc } from 'youtubei.js/web';
 import { timed, trackLog } from '../trackLog';
 import { botguard } from './botguard';
 import { ytAuthSnapshot } from '@/extension/useYtAuth';
 import { getInnertube, getSignedInnertube } from './innertube';
+import { markBroken, resolveVerified } from './iosResolver';
 import {
   CLIENT_ATTEMPTS,
   usesWebPo,
@@ -180,6 +181,42 @@ export class YouTubeEngine {
       this.yt ??= await timed('InnerTube session', videoId, getInnertube);
       void botguard.init().catch((error: unknown) => trackLog.w(`BotGuard init failed: ${String(error)}`, videoId));
 
+      // iOS app: a client proven to stream the whole track (iosResolver), before anything else.
+      if (NATIVE_DIRECT) {
+        const base = this.yt;
+        const verified = await timed('verified client', videoId, () => resolveVerified(base, videoId)).catch((error: unknown) => {
+          trackLog.w(`verified resolve failed: ${describe(error)}`, videoId);
+          return null;
+        });
+        this.checkCurrent(generation);
+        if (verified) {
+          try {
+            await player.unload();
+            this.adapter?.dispose();
+            this.adapter = null;
+            const client = verified.client as PlayerClientName;
+            this.current = { videoId, client, signed: verified.signed };
+            this.direct = null;
+            const track = await this.startNative(
+              player,
+              { videoId, client, info: verified.info, yt: base, signed: verified.signed },
+              startSec,
+              autoplay,
+              generation,
+              { format: verified.format, url: verified.url },
+            );
+            if (track) {
+              trackLog.i(`playing via ${track.client}, ${track.format}, first audio after ${Math.round(performance.now() - started)}ms`, videoId);
+              return track;
+            }
+          } catch (error) {
+            if (error instanceof SupersededError) throw error;
+            markBroken(videoId, verified.client);
+            trackLog.w(`${verified.client} verified but didn't start: ${describe(error)}`, videoId);
+          }
+        }
+      }
+
       const skip = new Set<PlayerClientName>();
       let lastError: unknown = null;
       let yt = this.yt;
@@ -313,16 +350,17 @@ export class YouTubeEngine {
     startSec: number,
     autoplay: boolean,
     generation: number,
+    verified?: { format: Misc.Format; url: string },
   ): Promise<LoadedTrack | null> {
     const { videoId, client, info, signed } = resolved;
     const formats = (info.streaming_data?.adaptive_formats ?? [])
       .filter((f) => f.has_audio && !f.has_video && /^audio\/mp4/.test(f.mime_type ?? '') && !f.is_drc)
       .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
-    const format = formats[0];
+    const format = verified?.format ?? formats[0];
     const sessionPlayer = this.yt?.session.player;
     if (!format || !sessionPlayer) return null;
-    const url = new URL(await format.decipher(sessionPlayer));
-    const pot = usesWebPo(client) ? await streamingToken(videoId, signed) : undefined;
+    const url = new URL(verified?.url ?? (await format.decipher(sessionPlayer)));
+    const pot = !verified && usesWebPo(client) ? await streamingToken(videoId, signed) : undefined;
     if (pot) url.searchParams.set('pot', pot);
     this.checkCurrent(generation);
 
@@ -389,6 +427,7 @@ export class YouTubeEngine {
     trackLog.w(`native playback error ${code ?? '?'}: ${this.audio.error?.message ?? ''}`, current?.videoId ?? null);
     if (this.loading || !current || !this.nativeSrc) return;
     this.current = null;
+    markBroken(current.videoId, current.client);
     excludeClient(current.videoId, current.client, `native stream error ${code ?? '?'}`, current.signed);
     const resumeAt = this.audio.currentTime;
     const wasPlaying = !this.audio.paused;
