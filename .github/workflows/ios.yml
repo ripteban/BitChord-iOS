@@ -43,6 +43,14 @@ jobs:
           cp -R app/dist ../ios/www
           du -sh ../ios/www
 
+      - name: Use the newest Xcode (iOS 26 SDK, for Liquid Glass)
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
+          xcrun simctl list runtimes | grep -i ios || true
+
       - name: Generate the Xcode project
         working-directory: ios
         run: |
@@ -92,6 +100,22 @@ jobs:
           set -o pipefail
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
           xcodebuild test -project BitChord.xcodeproj -scheme BitChord -configuration Debug             -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build/sim             -resultBundlePath build/uitest.xcresult CODE_SIGNING_ALLOWED=NO 2>&1             | grep -E "UITEST|error|failed|passed|Test Case|XCTAssert|\*\* TEST" | head -60
+
+      - name: Export UI test screenshots
+        if: always()
+        working-directory: ios
+        continue-on-error: true
+        run: |
+          mkdir -p uitest-shots
+          xcrun xcresulttool export attachments --path build/uitest.xcresult --output-path uitest-shots >/dev/null 2>&1 || true
+          ls uitest-shots | head -20
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uitest-shots
+          path: ios/uitest-shots
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
         if: always()

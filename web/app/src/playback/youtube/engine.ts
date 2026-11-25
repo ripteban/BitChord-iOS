@@ -62,6 +62,16 @@ export interface VideoStream {
  */
 const MIN_VIDEO_ASPECT = 1.2;
 
+/**
+ * Inside the iOS app (ios/inject.js sets the flag). There, a track with direct
+ * URLs plays from its AAC file through the element's own src: WebKit's native
+ * player (AVFoundation) streams and seeks it, which is lighter and steadier on
+ * an iPhone than Shaka over ManagedMediaSource. The URL goes through the app's
+ * same-origin proxy (app://…/__net/), so Web Audio (crossfade, Automix) still
+ * hears it.
+ */
+const NATIVE_DIRECT = typeof window !== 'undefined' && (window as Window & { __bitchordIOS?: boolean }).__bitchordIOS === true;
+
 export class SupersededError extends Error {
   override readonly name = 'SupersededError';
 }
@@ -93,6 +103,8 @@ export class YouTubeEngine {
   /** The response the playing track streams from, when it has direct URLs; the video picture comes from it too. */
   private direct: ResolvedPlayer | null = null;
   private preferredCodecs: string[];
+  /** The element plays a plain src (NATIVE_DIRECT); Shaka is detached from it. */
+  private nativeSrc = false;
 
   /** Raised when a track can't be played at all, after every fallback. */
   onFatal: (videoId: string, message: string, permanent: boolean) => void = () => {};
@@ -230,6 +242,11 @@ export class YouTubeEngine {
     this.direct = null;
 
     const direct = hasDirectAudio(info);
+    if (direct && NATIVE_DIRECT) {
+      const native = await this.startNative(player, resolved, startSec, autoplay, generation);
+      if (native) return native;
+    }
+    await this.useShaka(player);
     const manifest = direct ? await this.directManifest(resolved) : await this.sabrManifest(player, resolved);
     this.checkCurrent(generation);
     const mode = direct ? 'direct' : 'SABR';
@@ -268,6 +285,106 @@ export class YouTubeEngine {
       loudnessDb: info.player_config?.audio_config?.loudness_db ?? null,
     };
   }
+
+  /** Gives the element back to Shaka after a native track. */
+  private async useShaka(player: shaka.Player): Promise<void> {
+    if (!this.nativeSrc) return;
+    this.nativeSrc = false;
+    this.audio.removeEventListener('error', this.onNativeError);
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    await player.attach(this.audio);
+  }
+
+  /**
+   * NATIVE_DIRECT: the best AAC file, deciphered, as the element's src. Null
+   * when the response has no usable AAC, so the caller falls back to Shaka.
+   */
+  private async startNative(
+    player: shaka.Player,
+    resolved: ResolvedPlayer,
+    startSec: number,
+    autoplay: boolean,
+    generation: number,
+  ): Promise<LoadedTrack | null> {
+    const { videoId, client, info } = resolved;
+    const formats = (info.streaming_data?.adaptive_formats ?? [])
+      .filter((f) => f.has_audio && !f.has_video && /^audio\/mp4/.test(f.mime_type ?? '') && !f.is_drc)
+      .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
+    const format = formats[0];
+    const sessionPlayer = this.yt?.session.player;
+    if (!format || !sessionPlayer) return null;
+    const url = new URL(await format.decipher(sessionPlayer));
+    const pot = usesWebPo(client) ? await botguard.mint(videoId) : undefined;
+    if (pot) url.searchParams.set('pot', pot);
+    this.checkCurrent(generation);
+
+    if (!this.nativeSrc) {
+      await player.detach();
+      this.nativeSrc = true;
+    }
+    this.audio.removeEventListener('error', this.onNativeError);
+    this.audio.addEventListener('error', this.onNativeError);
+    const metadata = new Promise<void>((resolve) => this.audio.addEventListener('loadedmetadata', () => resolve(), { once: true }));
+    this.audio.src = `${location.origin}/__net/?u=${encodeURIComponent(url.href)}`;
+    this.audio.load();
+    await timed(`${client} native load`, videoId, () => metadata);
+    this.checkCurrent(generation);
+    if (startSec > 0) this.audio.currentTime = startSec;
+    this.direct = resolved;
+
+    if (autoplay) {
+      await this.audio.play().catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'NotAllowedError') {
+          trackLog.w('autoplay was blocked by the browser; waiting for a tap', videoId);
+        } else throw error;
+      });
+    }
+    await this.firstAudio(generation);
+
+    const itag = String(format.itag);
+    const kbps = Math.round((format.bitrate ?? 0) / 1000) || null;
+    const basic = info.basic_info;
+    return {
+      videoId,
+      title: basic.title ?? '',
+      author: basic.author ?? '',
+      durationSec: basic.duration ?? Math.round(this.audio.duration || 0),
+      thumbnails: [...(basic.thumbnail ?? [])]
+        .map((t) => ({ url: t.url, width: t.width, height: t.height }))
+        .sort((a, b) => b.width - a.width),
+      client,
+      format: `${itag} mp4a ${kbps ?? '?'}kbps native`,
+      stream: {
+        codec: 'AAC',
+        itag,
+        bitrateKbps: kbps,
+        sampleRateHz: format.audio_sample_rate ?? null,
+        channels: format.audio_channels ?? null,
+        mode: 'direct',
+      },
+      loudnessDb: info.player_config?.audio_config?.loudness_db ?? null,
+    };
+  }
+
+  /** NATIVE_DIRECT's counterpart of onShakaError: a refused or broken stream moves to the next client. */
+  private onNativeError = () => {
+    const current = this.current;
+    const code = this.audio.error?.code;
+    trackLog.w(`native playback error ${code ?? '?'}: ${this.audio.error?.message ?? ''}`, current?.videoId ?? null);
+    if (this.loading || !current || !this.nativeSrc) return;
+    this.current = null;
+    excludeClient(current.videoId, current.client, `native stream error ${code ?? '?'}`, current.signed);
+    const resumeAt = this.audio.currentTime;
+    const wasPlaying = !this.audio.paused;
+    this.load(current.videoId, { startSec: resumeAt, autoplay: wasPlaying })
+      .then((track) => this.onRecovered(track))
+      .catch((failure: unknown) => {
+        if (failure instanceof SupersededError) return;
+        void this.stop();
+        this.onFatal(current.videoId, describe(failure), failure instanceof UnplayableError);
+      });
+  };
 
   /**
    * A plain DASH manifest over the response's own audio URLs, which Shaka
@@ -468,6 +585,11 @@ export class YouTubeEngine {
     this.generation++;
     this.current = null;
     this.direct = null;
+    if (this.nativeSrc) {
+      this.audio.pause();
+      this.audio.removeAttribute('src');
+      this.audio.load();
+    }
     await this.player?.unload();
     this.adapter?.dispose();
     this.adapter = null;

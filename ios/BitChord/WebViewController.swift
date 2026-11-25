@@ -7,6 +7,9 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     private var webView: WKWebView!
     private let schemeHandler = AppSchemeHandler()
     private let bridge = Bridge()
+    private let chrome = NativeChromeView()
+    private var themeObservation: NSKeyValueObservation?
+    static let pageBackground = UIColor(red: 0x1f / 255, green: 0x1f / 255, blue: 0x1f / 255, alpha: 1)
 
     /// The simulator smoke test (CI) and debug builds log the page's console to the system log.
     nonisolated static let diagnostics: Bool = {
@@ -17,7 +20,8 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         #endif
     }()
 
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    private var lightPage = false
+    override var preferredStatusBarStyle: UIStatusBarStyle { lightPage ? .darkContent : .lightContent }
 
     override func loadView() {
         let config = WKWebViewConfiguration()
@@ -32,7 +36,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
         let content = config.userContentController
         content.addScriptMessageHandler(bridge, contentWorld: .page, name: Bridge.name)
-        let flags = "window.__bitchordDebug = \(Self.diagnostics);"
+        let flags = "window.__bitchordDebug = \(Self.diagnostics); window.__bitchordNativeChrome = true;"
         content.addUserScript(WKUserScript(source: flags, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         if let url = Bundle.main.url(forResource: "inject", withExtension: "js"),
            let source = try? String(contentsOf: url, encoding: .utf8)
@@ -47,7 +51,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.isOpaque = false
-        webView.backgroundColor = UIColor(red: 0x1f / 255, green: 0x1f / 255, blue: 0x1f / 255, alpha: 1)
+        webView.backgroundColor = Self.pageBackground
         webView.scrollView.backgroundColor = webView.backgroundColor
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = false
@@ -58,7 +62,55 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
         if #available(iOS 16.4, *) { webView.isInspectable = true }
-        view = webView
+
+        // The page starts below the status bar and the Dynamic Island: nothing it
+        // draws can sit under them, so every button stays tappable. The strip above
+        // takes the page's own theme colour. At the bottom it runs to the edge; the
+        // page and the native bar keep clear of the home indicator themselves.
+        let root = UIView()
+        root.backgroundColor = Self.pageBackground
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        chrome.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(webView)
+        root.addSubview(chrome)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            chrome.topAnchor.constraint(equalTo: root.topAnchor),
+            chrome.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            chrome.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            chrome.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        view = root
+
+        chrome.onAction = { [weak self] action, argument in
+            self?.chromeAction(action, argument)
+        }
+        bridge.onChrome = { [weak self] state in
+            self?.chrome.apply(state)
+        }
+        themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] webView, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let color = webView.themeColor ?? Self.pageBackground
+                self.view.backgroundColor = color
+                var white: CGFloat = 0
+                color.getWhite(&white, alpha: nil)
+                if self.lightPage != (white > 0.6) {
+                    self.lightPage = white > 0.6
+                    self.setNeedsStatusBarAppearanceUpdate()
+                }
+            }
+        }
+    }
+
+    /// A tap on the native bar, handed to the page (web/app/src/shell/NativeChrome.tsx).
+    private func chromeAction(_ action: String, _ argument: String?) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [action, argument ?? ""]),
+              let args = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.__bitchordChrome && window.__bitchordChrome.apply(null, \(args))", completionHandler: nil)
     }
 
     /// ProMotion: WebKit renders pages near 60 fps unless told otherwise. Flip that

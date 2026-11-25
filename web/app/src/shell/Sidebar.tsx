@@ -21,6 +21,7 @@ import { useLibraryPlaylists, useSignedIn } from '@/data/music/queries';
 import { useSpotifyPlaylists } from '@/data/spotify/queries';
 import { useExtensionUpdate } from '@/extension/useExtensionUpdate';
 import { useSpotifySignedIn } from '@/extension/useSpotifyAuth';
+import { isIOSApp } from '@/lib/platform';
 import { useUi } from '@/state/ui';
 import { AccountButton } from './AccountButton';
 
@@ -163,6 +164,7 @@ export function Sidebar() {
           {spotifySignedIn && <SpotifyNav onNavigate={close} />}
         </div>
         <div className="flex flex-col gap-2 pt-3 pr-3 pb-5 pl-5">
+          {!isIOSApp() && (
           <PrefetchNavLink to="/extension" className={item} onClick={close}>
             {/* Chrome's own toolbar glyph for extensions (Material "extension"). */}
             <span className={icon}>
@@ -175,12 +177,17 @@ export function Sidebar() {
               </span>
             )}
           </PrefetchNavLink>
+          )}
           <AccountButton />
           <div className="flex items-center justify-between">
-            <a className="inline-flex items-center gap-1 ps-1 type-callout text-primary hover:underline" href={config.androidAppUrl} target="_blank" rel="noreferrer">
-              <span>Get the Android app</span>
-              <ArrowUpRight size={14} strokeWidth={2} />
-            </a>
+            {isIOSApp() ? (
+              <span />
+            ) : (
+              <a className="inline-flex items-center gap-1 ps-1 type-callout text-primary hover:underline" href={config.androidAppUrl} target="_blank" rel="noreferrer">
+                <span>Get the Android app</span>
+                <ArrowUpRight size={14} strokeWidth={2} />
+              </a>
+            )}
             <PrefetchNavLink to="/settings" className="grid size-7 place-items-center rounded-nav text-secondary hover:bg-quinary hover:text-primary aria-[current=page]:bg-quinary aria-[current=page]:text-primary" aria-label="Settings" title="Settings" onClick={close}>
               <Settings size={17} strokeWidth={1.9} />
             </PrefetchNavLink>

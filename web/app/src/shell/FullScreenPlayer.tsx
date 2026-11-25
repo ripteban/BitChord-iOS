@@ -224,10 +224,12 @@ export function FullScreenPlayer() {
   const album = track?.album ?? null;
   // With a right-hand column; on narrow windows that column fills the screen and the controls sit under it, without the artwork.
   const column = showLyrics || showQueue;
+  const phone = typeof matchMedia === 'function' && matchMedia('(max-width: 483.98px)').matches;
   // A music video on its own fills the window.
   const theater = video && !column;
   // ...and hides the controls and the pointer while it plays undisturbed.
-  const hidden = theater && playing && idle ? ' pointer-events-none opacity-0' : '';
+  // On a phone the controls never fade: there's no pointer to wake them, and they stay put.
+  const hidden = theater && playing && idle && !phone ? ' pointer-events-none opacity-0' : '';
   const corner = `${chrome} transition-[background-color,color,opacity] duration-300${hidden}`;
 
   return (
@@ -273,7 +275,7 @@ export function FullScreenPlayer() {
       <div
         className={
           theater
-            ? `absolute inset-x-0 bottom-0 flex justify-center bg-[linear-gradient(to_top,rgb(0_0_0/0.72),rgb(0_0_0/0.35)_55%,transparent)] px-6 pt-32 pb-16 transition-opacity duration-300${hidden}`
+            ? `absolute inset-x-0 bottom-0 flex justify-center bg-[linear-gradient(to_top,rgb(0_0_0/0.72),rgb(0_0_0/0.35)_55%,transparent)] px-6 pt-32 pb-16 max-sm:pb-[calc(72px+env(safe-area-inset-bottom))] transition-opacity duration-300${hidden}`
             : `grid h-full items-center justify-center gap-x-[clamp(48px,7vw,144px)] px-[clamp(24px,9vw,144px)] py-16 max-md:px-6 max-md:pb-18 max-sm:pt-[calc(64px+env(safe-area-inset-top))] max-sm:pb-[calc(72px+env(safe-area-inset-bottom))] ${
                 column
                   ? 'grid-cols-[var(--art)_minmax(0,38vw)] max-md:grid-cols-[minmax(0,1fr)] max-md:grid-rows-[minmax(0,1fr)_auto] max-md:items-stretch max-md:gap-y-4'

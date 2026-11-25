@@ -1,5 +1,6 @@
 // Registers <am-lyrics>.
 import '@uimaxbai/am-lyrics/am-lyrics.js';
+import { isIOSApp } from '@/lib/platform';
 import { Check, ChevronDown, Loader2, Minus, Settings2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useCanvas } from '@/data/spotify/canvas';
@@ -110,12 +111,20 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     el.interpolate = true;
     el.autoScroll = true;
     el.highlightColor = '#ffffff';
+    // In the iOS app: no blur on the lines around the current one. A CSS blur on
+    // every line repaints the whole column each frame in WebKit.
+    if (isIOSApp()) (el as AmLyricsElement & { noBlur: boolean }).noBlur = true;
     el.fontFamily = LYRIC_FONT;
     el.className = 'block min-h-0 flex-1 overflow-hidden [--am-lyrics-highlight-color:#fff]';
     el.toggleAttribute('data-full', full);
+    let lastSeek = 0;
     const onLineClick = (event: Event) => {
       const timestamp = (event as CustomEvent<{ timestamp: number }>).detail?.timestamp;
-      if (typeof timestamp === 'number') usePlayer.getState().seek(timestamp / 1000);
+      // One seek per tap: a line and its translation can both report the same tap.
+      const now = performance.now();
+      if (typeof timestamp !== 'number' || now - lastSeek < 350) return;
+      lastSeek = now;
+      usePlayer.getState().seek(timestamp / 1000);
     };
     el.addEventListener('line-click', onLineClick);
     host.current?.append(el);

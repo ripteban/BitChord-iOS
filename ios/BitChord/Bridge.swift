@@ -17,6 +17,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
 
     /// The page, for pushing events (`yt.authState`) the way the extension's port does.
     weak var webView: WKWebView?
+    /// The page's state for the native tab bar and mini player (`{kind: "chrome", …}`).
+    var onChrome: (([String: Any]) -> Void)?
 
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -38,6 +40,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 return
             }
             switch kind {
+            case "chrome":
+                self.onChrome?(body)
+                replyHandler(nil, nil)
             case "log":
                 NSLog("[BitChord][js:%@] %@", body["level"] as? String ?? "log", body["message"] as? String ?? "")
                 replyHandler(nil, nil)

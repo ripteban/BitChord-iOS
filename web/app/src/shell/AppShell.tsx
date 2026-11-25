@@ -8,12 +8,13 @@ import { Outlet } from 'react-router';
 import { PrefetchLink } from '@/components/PrefetchLink';
 import { config } from '@/config';
 import { useExtension } from '@/extension/useExtension';
-import { isMobileBrowser } from '@/lib/platform';
+import { hasNativeChrome, isMobileBrowser } from '@/lib/platform';
 import { useUi } from '@/state/ui';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { Banner, bannerButtonClass } from './Banner';
 import { MobilePlayer, PlayerErrorBoundary } from './MobilePlayer';
 import { MobileTopBar } from './MobileTopBar';
+import { NativeChromeBridge } from './NativeChrome';
 import { PlayerBar } from './PlayerBar';
 import { SidePanel } from './SidePanel';
 import { Sidebar } from './Sidebar';
@@ -92,7 +93,7 @@ export function AppShell() {
           </div>
         </main>
         <PlayerBar />
-        <MobilePlayer />
+        {hasNativeChrome() ? <NativeChromeBridge /> : <MobilePlayer />}
         <SidePanel />
       </div>
       {banner}

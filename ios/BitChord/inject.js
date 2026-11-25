@@ -51,11 +51,16 @@ ${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
     input, textarea, select, [contenteditable=true] { -webkit-user-select: text; user-select: text; font-size: max(16px, 1em); }
     img { -webkit-user-drag: none; -webkit-touch-callout: none; }
   `;
+  // The native tab bar and mini player (NativeChrome.swift) float over the page's
+  // bottom: the page keeps its last rows clear of them.
+  const NATIVE_CHROME_CSS = `
+    :root { --mobile-bottom-chrome: calc(env(safe-area-inset-bottom) + 138px) !important; }
+  `;
   const addAppStyle = () => {
     if (document.getElementById('bitchord-ios-style')) return;
     const style = document.createElement('style');
     style.id = 'bitchord-ios-style';
-    style.textContent = APP_CSS;
+    style.textContent = APP_CSS + (window.__bitchordNativeChrome ? NATIVE_CHROME_CSS : '');
     (document.head || document.documentElement).appendChild(style);
   };
   lockViewport();
