@@ -42,7 +42,7 @@ final class NativeChromeView: UIView {
     private var artworkURL: String?
     private static let artworkCache = NSCache<NSString, UIImage>()
 
-    private var hidden = false
+    private var isCovered = false
     private var hasTrack = false
 
     override init(frame: CGRect) {
@@ -253,8 +253,8 @@ final class NativeChromeView: UIView {
         select(Self.tabs.firstIndex { $0.matches(path) }, animated: true)
 
         let covered = (state["fullScreen"] as? Bool ?? false) || (state["drawerOpen"] as? Bool ?? false)
-        if covered != hidden {
-            hidden = covered
+        if covered != isCovered {
+            isCovered = covered
             isUserInteractionEnabled = !covered
             UIView.animate(withDuration: 0.25) { self.alpha = covered ? 0 : 1 }
         }

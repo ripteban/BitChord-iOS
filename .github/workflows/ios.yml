@@ -68,7 +68,8 @@ jobs:
           set -o pipefail
           xcodebuild -project BitChord.xcodeproj -scheme BitChord -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO build | tail -40
+            -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO build > build-sim.log 2>&1 || { grep -E "error:" build-sim.log | sort -u | head -40; tail -20 build-sim.log; exit 1; }
+          tail -5 build-sim.log
 
       - name: Simulator smoke test
         working-directory: ios
