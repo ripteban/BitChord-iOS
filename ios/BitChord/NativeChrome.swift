@@ -24,10 +24,13 @@ final class NativeChromeView: UIView {
     static let tabBarHeight: CGFloat = 62
     static let miniHeight: CGFloat = 56
 
-    /// Called with ("navigate", path), ("togglePlay", nil), ("next", nil), ("openPlayer", nil).
+    /// Called with ("navigate", path), ("togglePlay", nil), ("next", nil), ("openPlayer", nil),
+    /// ("menu", nil) and ("diagnostics", nil).
     var onAction: ((String, String?) -> Void)?
 
     private let tabBar = GlassCapsule()
+    private let menuCapsule = GlassCapsule()
+    private let titleCapsule = GlassCapsule()
     private let mini = GlassCapsule()
     private let selection = UIView()
     private var tabButtons: [UIControl] = []
@@ -48,6 +51,7 @@ final class NativeChromeView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
+        buildTopBar()
         buildTabBar()
         buildMiniPlayer()
         mini.alpha = 0
@@ -60,6 +64,83 @@ final class NativeChromeView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
+    }
+
+    // MARK: Top bar: the menu in a glass circle, BitChord in a glass capsule, both below the Dynamic Island
+
+    private func buildTopBar() {
+        for capsule in [menuCapsule, titleCapsule] {
+            capsule.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(capsule)
+        }
+        NSLayoutConstraint.activate([
+            menuCapsule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            menuCapsule.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 4),
+            menuCapsule.widthAnchor.constraint(equalToConstant: 46),
+            menuCapsule.heightAnchor.constraint(equalToConstant: 46),
+            titleCapsule.centerXAnchor.constraint(equalTo: centerXAnchor),
+            titleCapsule.centerYAnchor.constraint(equalTo: menuCapsule.centerYAnchor),
+            titleCapsule.heightAnchor.constraint(equalToConstant: 46),
+        ])
+
+        let menu = UIButton(type: .system)
+        menu.setImage(UIImage(systemName: "line.3.horizontal", withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)), for: .normal)
+        menu.tintColor = .label
+        menu.accessibilityLabel = "Menú"
+        menu.addAction(UIAction { [weak self] _ in
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            self?.onAction?("menu", nil)
+        }, for: .touchUpInside)
+        menu.translatesAutoresizingMaskIntoConstraints = false
+        menuCapsule.content.addSubview(menu)
+        NSLayoutConstraint.activate([
+            menu.leadingAnchor.constraint(equalTo: menuCapsule.content.leadingAnchor),
+            menu.trailingAnchor.constraint(equalTo: menuCapsule.content.trailingAnchor),
+            menu.topAnchor.constraint(equalTo: menuCapsule.content.topAnchor),
+            menu.bottomAnchor.constraint(equalTo: menuCapsule.content.bottomAnchor),
+        ])
+
+        let logo = UIImageView(image: UIImage(named: "LogoMark")?.withRenderingMode(.alwaysTemplate))
+        logo.tintColor = .label
+        logo.contentMode = .scaleAspectFit
+        let name = UILabel()
+        name.text = "BitChord"
+        name.font = .systemFont(ofSize: 17, weight: .bold)
+        name.textColor = .label
+        let row = UIStackView(arrangedSubviews: [logo, name])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 6
+        row.isUserInteractionEnabled = false
+        row.translatesAutoresizingMaskIntoConstraints = false
+        let title = UIButton(type: .custom)
+        title.accessibilityLabel = "BitChord, Inicio"
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.addAction(UIAction { [weak self] _ in
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            self?.onAction?("navigate", "/home")
+        }, for: .touchUpInside)
+        // Hold it for the diagnostics sheet (also: shake the phone).
+        title.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(heldTitle(_:))))
+        titleCapsule.content.addSubview(title)
+        titleCapsule.content.addSubview(row)
+        NSLayoutConstraint.activate([
+            logo.widthAnchor.constraint(equalToConstant: 26),
+            logo.heightAnchor.constraint(equalToConstant: 26),
+            row.leadingAnchor.constraint(equalTo: titleCapsule.content.leadingAnchor, constant: 16),
+            row.trailingAnchor.constraint(equalTo: titleCapsule.content.trailingAnchor, constant: -18),
+            row.centerYAnchor.constraint(equalTo: titleCapsule.content.centerYAnchor),
+            title.leadingAnchor.constraint(equalTo: titleCapsule.content.leadingAnchor),
+            title.trailingAnchor.constraint(equalTo: titleCapsule.content.trailingAnchor),
+            title.topAnchor.constraint(equalTo: titleCapsule.content.topAnchor),
+            title.bottomAnchor.constraint(equalTo: titleCapsule.content.bottomAnchor),
+        ])
+    }
+
+    @objc private func heldTitle(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        onAction?("diagnostics", nil)
     }
 
     // MARK: Tab bar

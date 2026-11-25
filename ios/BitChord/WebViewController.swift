@@ -63,10 +63,10 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.allowsLinkPreview = false
         if #available(iOS 16.4, *) { webView.isInspectable = true }
 
-        // The page starts below the status bar and the Dynamic Island: nothing it
-        // draws can sit under them, so every button stays tappable. The strip above
-        // takes the page's own theme colour. At the bottom it runs to the edge; the
-        // page and the native bar keep clear of the home indicator themselves.
+        // Edge to edge, as Apple Music: the page scrolls under the status bar and
+        // the home indicator. The native glass capsules (top and bottom) sit over
+        // it; the page keeps its own content clear of them (inject.js sets the
+        // room they take), so every button stays tappable.
         let root = UIView()
         root.backgroundColor = Self.pageBackground
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -74,7 +74,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         root.addSubview(webView)
         root.addSubview(chrome)
         NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            webView.topAnchor.constraint(equalTo: root.topAnchor),
             webView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -108,6 +108,10 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     /// A tap on the native bar, handed to the page (web/app/src/shell/NativeChrome.tsx).
     private func chromeAction(_ action: String, _ argument: String?) {
+        if action == "diagnostics" {
+            showDiagnostics()
+            return
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: [action, argument ?? ""]),
               let args = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("window.__bitchordChrome && window.__bitchordChrome.apply(null, \(args))", completionHandler: nil)
@@ -131,6 +135,26 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
                 NSLog("[BitChord] ProMotion: page rendering no longer capped near 60 fps")
             }
         }
+    }
+
+    // MARK: Diagnostics: shake the phone (or hold the BitChord capsule)
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+        if motion == .motionShake { showDiagnostics() }
+        super.motionEnded(motion, with: event)
+    }
+
+    private func showDiagnostics() {
+        guard presentedViewController == nil else { return }
+        let nav = UINavigationController(rootViewController: DiagnosticsViewController(webView: webView))
+        present(nav, animated: true)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        becomeFirstResponder()
     }
 
     override func viewDidLoad() {
@@ -171,7 +195,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        NSLog("[BitChord] web content process terminated; reloading")
+        Diag.log("web content process terminated; reloading")
         webView.reload()
     }
 
@@ -184,7 +208,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        NSLog("[BitChord] loaded \(webView.url?.absoluteString ?? "?")")
+        Diag.log("loaded \(webView.url?.absoluteString ?? "?")")
         webView.scrollView.pinchGestureRecognizer?.isEnabled = false
         if ProcessInfo.processInfo.arguments.contains("-autotest"), !autotestStarted {
             autotestStarted = true

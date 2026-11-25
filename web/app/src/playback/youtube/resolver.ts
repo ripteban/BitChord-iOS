@@ -1,6 +1,7 @@
 import type { ApiResponse, Innertube, YT } from 'youtubei.js/web';
 import { trackLog } from '../trackLog';
 import { botguard } from './botguard';
+import { isIOSApp } from '@/lib/platform';
 
 /**
  * Which identity asks YouTube for a track, in order (prompt §5.2 step 5,
@@ -39,9 +40,11 @@ async function playerRequestToken(yt: Innertube, client: PlayerClientName): Prom
 /** StreamResolver: how many clients are worth trying for one track. */
 export const CLIENT_ATTEMPTS = 3;
 /** InnerTubeXResolver.EXCLUDE_MS: a client that refused a track sits out for this long. */
-const EXCLUDE_MS = 10 * 60_000;
+// In the iOS app a refusal is often the network's (a phone carrier's shared
+// address tripping YouTube's bot check), not the track's: ask again sooner.
+const EXCLUDE_MS = (isIOSApp() ? 2 : 10) * 60_000;
 /** StreamResolver.UNPLAYABLE_TTL_MS: a settled "no" isn't asked again for this long. */
-const UNPLAYABLE_TTL_MS = 10 * 60_000;
+const UNPLAYABLE_TTL_MS = (isIOSApp() ? 2 : 10) * 60_000;
 const MAX_REMEMBERED = 64;
 
 /**
@@ -131,7 +134,13 @@ function clientOrder(): readonly PlayerClientName[] {
  * way (WEB_REMIX with cookies, InnerTubeX). VISIONOS follows in case the
  * session is honoured there too.
  */
-const SIGNED_ORDER: readonly PlayerClientName[] = ['YTMUSIC', 'WEB', 'VISIONOS'];
+const SIGNED_ORDER: readonly PlayerClientName[] = isIOSApp()
+  ? // iOS app: VISIONOS first. It's the one client whose direct URLs stream a
+    // whole track without a PO token (measured 2026-11-25: VISIONOS 206 at 70%
+    // of the file; ANDROID_VR, IOS and TV_SIMPLY 403 there). The web clients
+    // follow, and they stop at ~60-70 s while their tokens aren't accepted.
+    ['VISIONOS', 'YTMUSIC', 'WEB']
+  : ['YTMUSIC', 'WEB', 'VISIONOS'];
 
 export function clientsFor(videoId: string, signed = false): PlayerClientName[] {
   const entries = excluded.get(keyOf(videoId, signed));
@@ -182,9 +191,16 @@ export async function playerRequest(
 
 /** Why a playability status is a verdict on the track rather than on the client, or null if it isn't. */
 const AGE_GATE = /confirm your age|age-restricted|inappropriate for some users|sign in to confirm/;
+/**
+ * "Sign in to confirm you're not a bot": about the visitor and their network,
+ * not the track. Worth asking again signed in, never worth remembering as a
+ * verdict on the track.
+ */
+const BOT_CHECK = /not a bot/;
 
 function permanentReason(status: string | undefined, reason: string | undefined, signedIn: boolean): string | null {
   const text = (reason ?? '').toLowerCase();
+  if (BOT_CHECK.test(text)) return null;
   if (AGE_GATE.test(text)) {
     return signedIn
       ? 'YouTube won’t serve this age-restricted track to this account. Check the account’s age is verified on YouTube.'
@@ -220,6 +236,7 @@ export async function resolvePlayer(
   let lastReason = 'No YouTube client would play this track';
   let permanent: string | null = null;
   let ageGated = false;
+  let botChecked = false;
 
   for (const client of candidates) {
     const started = performance.now();
@@ -236,6 +253,7 @@ export async function resolvePlayer(
       }
       const reason = info.playability_status?.reason ?? (status === 'OK' ? 'no audio stream in the response' : status ?? 'no status');
       lastReason = reason;
+      botChecked ||= BOT_CHECK.test(reason.toLowerCase());
       const verdict = permanentReason(status, reason, signed);
       if (verdict) {
         permanent = verdict;
@@ -251,6 +269,16 @@ export async function resolvePlayer(
   if (permanent) {
     rememberUnplayable(videoId, signed, permanent, ageGated);
     throw new UnplayableError(permanent, ageGated);
+  }
+  if (botChecked) {
+    // Not remembered: the next tap asks again. Marked like an age gate so the
+    // engine retries as the signed-in user, whom YouTube doesn't bot-check.
+    throw new UnplayableError(
+      signed
+        ? 'YouTube asked to confirm this isn’t a bot. Try again in a moment.'
+        : 'YouTube asked to confirm this isn’t a bot. Sign in to YouTube Music (menu ☰) and try again.',
+      true,
+    );
   }
   throw new Error(lastReason);
 }

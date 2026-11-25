@@ -328,7 +328,15 @@ export class YouTubeEngine {
     const metadata = new Promise<void>((resolve) => this.audio.addEventListener('loadedmetadata', () => resolve(), { once: true }));
     this.audio.src = `${location.origin}/__net/?u=${encodeURIComponent(url.href)}`;
     this.audio.load();
-    await timed(`${client} native load`, videoId, () => metadata);
+    // Never wait forever: a stream that doesn't start counts as a failure, so the next client gets its turn.
+    await timed(`${client} native load`, videoId, () =>
+      Promise.race([
+        metadata,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`no audio within ${FIRST_AUDIO_TIMEOUT_MS / 1000}s`)), FIRST_AUDIO_TIMEOUT_MS),
+        ),
+      ]),
+    );
     this.checkCurrent(generation);
     if (startSec > 0) this.audio.currentTime = startSec;
     this.direct = resolved;

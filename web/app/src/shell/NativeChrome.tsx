@@ -43,6 +43,10 @@ export function NativeChromeBridge() {
         case 'next':
           player.next();
           break;
+        case 'menu':
+          ui.setFullScreen(false);
+          ui.setDrawerOpen(true);
+          break;
         case 'openPlayer':
           ui.setDrawerOpen(false);
           ui.setFullScreen(true);

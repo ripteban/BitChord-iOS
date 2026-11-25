@@ -13,6 +13,33 @@
   const ORIGIN = location.origin;
   const CHANNEL = 'bitchord-bridge';
 
+  // ---- diagnostics: the last few hundred console lines and errors, kept in memory.
+  // Read by the app's diagnostics sheet (shake the phone) through __bitchordDiag().
+  const DIAG_MAX = 400;
+  const diag = [];
+  const remember = (level, args) => {
+    try {
+      const text = Array.prototype.map
+        .call(args, (a) =>
+          a instanceof Error ? `${a.name}: ${a.message}` : typeof a === 'string' ? a : a && typeof a === 'object' ? (() => { try { return JSON.stringify(a).slice(0, 300); } catch { return String(a); } })() : String(a),
+        )
+        .join(' ')
+        .slice(0, 600);
+      diag.push(`${new Date().toISOString().slice(11, 23)} ${level} ${text}`);
+      if (diag.length > DIAG_MAX) diag.splice(0, diag.length - DIAG_MAX);
+    } catch {}
+  };
+  for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      remember(level, args);
+      original(...args);
+    };
+  }
+  window.addEventListener('error', (e) => remember('uncaught', [e.message, `${e.filename}:${e.lineno}`]));
+  window.addEventListener('unhandledrejection', (e) => remember('rejection', [e.reason]));
+  window.__bitchordDiag = () => diag.join(String.fromCharCode(10));
+
   // ---- console -> Xcode/simulator log (diagnostic builds only: it costs time) --
   if (window.__bitchordDebug) {
     for (const level of ['log', 'info', 'warn', 'error']) {
@@ -54,7 +81,10 @@ ${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
   // The native tab bar and mini player (NativeChrome.swift) float over the page's
   // bottom: the page keeps its last rows clear of them.
   const NATIVE_CHROME_CSS = `
-    :root { --mobile-bottom-chrome: calc(env(safe-area-inset-bottom) + 138px) !important; }
+    :root {
+      --mobile-bottom-chrome: calc(env(safe-area-inset-bottom) + 138px) !important;
+      --mobile-top-bar-height: calc(env(safe-area-inset-top) + 58px) !important;
+    }
   `;
   const addAppStyle = () => {
     if (document.getElementById('bitchord-ios-style')) return;

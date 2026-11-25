@@ -164,6 +164,14 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
         dataTask.resume()
     }
 
+    /// Host, path and the query keys that tell streams apart, for the log (never full signed URLs).
+    static func short(_ url: URL?) -> String {
+        guard let url, let host = url.host else { return "?" }
+        let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let keep = q.filter { ["itag", "c", "clen", "range"].contains($0.name) }.map { "\($0.name)=\($0.value ?? "")" }
+        return "\(host)\(url.path)" + (keep.isEmpty ? "" : "?" + keep.joined(separator: "&"))
+    }
+
     static func read(_ stream: InputStream) -> Data {
         var data = Data()
         stream.open()
@@ -210,6 +218,9 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
         if WebViewController.diagnostics { NSLog("[BitChord][net] %d %@ %@ enc=%@ type=%@", http.statusCode, dataTask.originalRequest?.httpMethod ?? "?",
               String((dataTask.originalRequest?.url?.absoluteString ?? "").prefix(110)),
               http.value(forHTTPHeaderField: "Content-Encoding") ?? "-", http.value(forHTTPHeaderField: "Content-Type") ?? "-") }
+        if http.statusCode >= 400 {
+            Diag.log("net \(http.statusCode) \(dataTask.originalRequest?.httpMethod ?? "?") \(Self.short(dataTask.originalRequest?.url))")
+        }
         task.didReceive(pageResponse)
         completionHandler(.allow)
     }
@@ -223,6 +234,9 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
         let bytes = received.removeValue(forKey: task.taskIdentifier) ?? 0
         if WebViewController.diagnostics && (error != nil || bytes < 200_000) {
             NSLog("[BitChord][net] done %@ bytes=%d err=%@", String((task.originalRequest?.url?.absoluteString ?? "").prefix(90)), bytes, String(describing: error))
+        }
+        if let error, (error as? URLError)?.code != .cancelled {
+            Diag.log("net error \(Self.short(task.originalRequest?.url)): \(error.localizedDescription)")
         }
         if let schemeTask = live(task) {
             if let error {

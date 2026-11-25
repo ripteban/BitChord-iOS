@@ -61,5 +61,13 @@ final class PlayerUITests: XCTestCase {
         app.buttons["Inicio"].tap()
         sleep(3)
         shot(app, "5-home")
+
+        // 4. The native top bar: the menu opens the drawer.
+        let menu = app.buttons["Menú"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5) && menu.isHittable, "no native menu button")
+        menu.tap()
+        sleep(2)
+        print("[UITEST] menu button tapped")
+        shot(app, "6-menu")
     }
 }

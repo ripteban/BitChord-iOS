@@ -89,7 +89,8 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
     private func ok(_ result: Any) -> [String: Any] { ["ok": true, "result": result] }
 
     private func fail(_ code: String, _ message: String) -> [String: Any] {
-        ["ok": false, "error": ["code": code, "message": message]]
+        Diag.log("bridge \(code): \(message.prefix(200))")
+        return ["ok": false, "error": ["code": code, "message": message]]
     }
 
     private func handle(method: String, params: [String: Any]) async -> [String: Any] {
