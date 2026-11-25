@@ -113,6 +113,31 @@ class BotguardService {
    * mint that fails gets one retry on a fresh BotGuard, as PoTokenGenerator does.
    */
   async mint(contentBinding: string): Promise<string | undefined> {
+    // iOS app: minted natively in a page with YouTube's own origin, as the
+    // Android app does (ios/BitChord/PoToken.swift). Tokens minted here, on the
+    // app's own origin, weren't accepted: streams stopped at 1 MiB.
+    const nativePot = (
+      window as Window & {
+        __bitchordNativePot?: boolean;
+        webkit?: { messageHandlers?: { bitchord?: { postMessage: (m: unknown) => Promise<unknown> } } };
+      }
+    );
+    if (nativePot.__bitchordNativePot && nativePot.webkit?.messageHandlers?.bitchord) {
+      try {
+        const reply = (await nativePot.webkit.messageHandlers.bitchord.postMessage({
+          kind: 'bridge',
+          method: 'ios.pot',
+          params: { identifier: contentBinding },
+        })) as { ok: boolean; result?: { token: string }; error?: { message: string } };
+        if (reply.ok && reply.result?.token) {
+          trackLog.d(`PO token minted natively (${reply.result.token.length} chars)`, contentBinding);
+          return reply.result.token;
+        }
+        trackLog.w(`native PO token failed: ${reply.error?.message ?? 'no token'}`, contentBinding);
+      } catch (error) {
+        trackLog.w(`native PO token failed: ${String(error)}`, contentBinding);
+      }
+    }
     const known = this.tokens.get(contentBinding);
     if (known && Date.now() < this.expiresAt - RENEW_MARGIN_MS) return known;
     for (let attempt = 0; attempt < 2; attempt++) {

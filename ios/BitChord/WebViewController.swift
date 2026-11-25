@@ -37,7 +37,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
         let content = config.userContentController
         content.addScriptMessageHandler(bridge, contentWorld: .page, name: Bridge.name)
-        let flags = "window.__bitchordDebug = \(Self.diagnostics); window.__bitchordNativeChrome = true;"
+        let flags = "window.__bitchordDebug = \(Self.diagnostics); window.__bitchordNativeChrome = true; window.__bitchordNativePot = true;"
         content.addUserScript(WKUserScript(source: flags, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         if let url = Bundle.main.url(forResource: "inject", withExtension: "js"),
            let source = try? String(contentsOf: url, encoding: .utf8)

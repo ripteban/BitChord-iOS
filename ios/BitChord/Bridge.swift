@@ -128,6 +128,15 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 let state = await auth.setConnected(params["connected"] as? Bool == true)
                 broadcast(event: "yt.authState", data: state)
                 return ok(state)
+            case "ios.pot":
+                // A BotGuard PO token minted on youtube.com's origin (PoToken.swift).
+                let identifier = params["identifier"] as? String ?? ""
+                guard !identifier.isEmpty else { return fail("internal", "ios.pot needs an identifier") }
+                do {
+                    return ok(["token": try await PoToken.shared.mint(identifier)])
+                } catch {
+                    return fail("internal", "po token: \(error.localizedDescription)")
+                }
             case "ios.http":
                 // The iOS resolver's player requests, as any InnerTube client (iosResolver.ts).
                 let url = params["url"] as? String ?? ""
