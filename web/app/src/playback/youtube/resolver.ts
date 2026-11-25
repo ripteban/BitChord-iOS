@@ -31,11 +31,34 @@ export function usesWebPo(client: PlayerClientName): boolean {
 }
 
 /** The player-request token for [client], or undefined for a client that doesn't take one. */
-async function playerRequestToken(yt: Innertube, client: PlayerClientName): Promise<string | undefined> {
-  if (!WEBPO_CLIENTS.has(client)) return undefined;
+/**
+ * iOS app, signed in: the account's DATASYNC_ID (first part), which the app
+ * reads from YouTube Music's page (YouTubeAuth.swift). A signed-in session's
+ * PO tokens are bound to the account, not to the anonymous visitor: bound to
+ * the visitor, YouTube kept refusing the stream past its first 512 KB.
+ */
+export function accountBinding(): string | null {
+  if (!isIOSApp()) return null;
+  const state = ytAuthSnapshot() as ReturnType<typeof ytAuthSnapshot> & { dataSyncId?: string | null };
+  return state.signedIn && state.dataSyncId ? state.dataSyncId : null;
+}
+
+async function playerRequestToken(
+  yt: Innertube,
+  client: PlayerClientName,
+  { signed = false, force = false }: { signed?: boolean; force?: boolean } = {},
+): Promise<string | undefined> {
+  if (!WEBPO_CLIENTS.has(client) && !force) return undefined;
+  const account = signed ? accountBinding() : null;
+  if (account) return botguard.mint(account);
   const visitorData = yt.session.context.client.visitorData;
   if (!visitorData) return undefined;
   return botguard.mint(decodeURIComponent(visitorData));
+}
+
+/** The streaming token (`pot`) for a media URL: bound to the account when signed in (iOS app), else to the videoId. */
+export function streamingToken(videoId: string, signed: boolean): Promise<string | undefined> {
+  return botguard.mint((signed && accountBinding()) || videoId);
 }
 
 /** StreamResolver: how many clients are worth trying for one track. */
@@ -136,11 +159,9 @@ function clientOrder(): readonly PlayerClientName[] {
  * session is honoured there too.
  */
 const SIGNED_ORDER: readonly PlayerClientName[] = isIOSApp()
-  ? // iOS app: VISIONOS first. It's the one client whose direct URLs stream a
-    // whole track without a PO token (measured 2026-11-25: VISIONOS 206 at 70%
-    // of the file; ANDROID_VR, IOS and TV_SIMPLY 403 there). The web clients
-    // follow, and they stop at ~60-70 s while their tokens aren't accepted.
-    ['VISIONOS', 'YTMUSIC', 'WEB']
+  ? // iOS app: VISIONOS doesn't take a signed-in session (HTTP 400, seen on a
+    // phone); the web clients do, with PO tokens bound to the account.
+    ['YTMUSIC', 'WEB']
   : ['YTMUSIC', 'WEB', 'VISIONOS'];
 
 export function clientsFor(videoId: string, signed = false): PlayerClientName[] {
@@ -175,8 +196,9 @@ export async function playerRequest(
   videoId: string,
   client: PlayerClientName,
   reloadPlaybackContext?: unknown,
+  options: { signed?: boolean; force?: boolean } = {},
 ): Promise<ApiResponse> {
-  const poToken = await playerRequestToken(yt, client);
+  const poToken = await playerRequestToken(yt, client, options);
   return yt.actions.execute('/player', {
     ...(poToken && { serviceIntegrityDimensions: { poToken } }),
     videoId,
@@ -254,7 +276,7 @@ export async function resolvePlayer(
   for (const client of candidates) {
     const started = performance.now();
     try {
-      const response = await playerRequest(yt, videoId, client);
+      let response = await playerRequest(yt, videoId, client, undefined, { signed });
       const info = new YT.VideoInfo([response], yt.actions, Utils.generateRandomString(16));
       const status = info.playability_status?.status;
       const ms = Math.round(performance.now() - started);
@@ -268,9 +290,21 @@ export async function resolvePlayer(
       lastReason = reason;
       const bot = BOT_CHECK.test(reason.toLowerCase());
       botChecked ||= bot;
-      // iOS app: VISIONOS is the client that plays whole tracks. Refused by the
-      // bot check, don't fall through to the web clients (they answer, but their
-      // streams stop at ~60-70 s): ask VISIONOS again as the signed-in user.
+      // iOS app: VISIONOS is the client that plays whole tracks. Bot-checked,
+      // ask it once more carrying a player PO token (what a real client sends).
+      if (bot && client === 'VISIONOS' && !signed && isIOSApp()) {
+        const retried = await playerRequest(yt, videoId, client, undefined, { force: true }).catch(() => null);
+        if (retried) {
+          const again = new YT.VideoInfo([retried], yt.actions, Utils.generateRandomString(16));
+          const againOk =
+            again.playability_status?.status === 'OK' &&
+            !!again.streaming_data?.adaptive_formats.some((f) => f.has_audio && !f.has_video);
+          trackLog.i(`VISIONOS with a player PO token: ${againOk ? 'OK' : again.playability_status?.reason ?? again.playability_status?.status}`, videoId);
+          if (againOk) return { videoId, client, info: again, yt, signed };
+        }
+      }
+      // Still refused: don't fall through to the anonymous web clients (they
+      // answer, but their streams stop at ~60-70 s): go signed in.
       if (bot && client === 'VISIONOS' && !signed && isIOSApp() && ytAuthSnapshot().signedIn) {
         botCheckedAt = Date.now();
         excludeClient(videoId, client, `${status}: ${reason} (${ms}ms); asking again signed in`, signed);

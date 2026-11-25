@@ -1,4 +1,4 @@
-import { ArrowUpRight, ListMusic, Settings } from 'lucide-react';
+import { Activity, ArrowUpRight, ListMusic, Settings } from 'lucide-react';
 import { MdOutlineExtension } from 'react-icons/md';
 import { PrefetchLink, PrefetchNavLink } from '@/components/PrefetchLink';
 import { LogoMark } from '@/components/icons/LogoMark';
@@ -163,7 +163,7 @@ export function Sidebar() {
           {signedIn && <LibraryNav onNavigate={close} />}
           {spotifySignedIn && <SpotifyNav onNavigate={close} />}
         </div>
-        <div className="flex flex-col gap-2 pt-3 pr-3 pb-5 pl-5">
+        <div className="flex flex-col gap-1 border-t border-divider pt-3 pr-3 pb-5 pl-5">
           {!isIOSApp() && (
           <PrefetchNavLink to="/extension" className={item} onClick={close}>
             {/* Chrome's own toolbar glyph for extensions (Material "extension"). */}
@@ -180,8 +180,16 @@ export function Sidebar() {
           )}
           <AccountButton />
           {isIOSApp() && (
+            <PrefetchNavLink to="/settings" className={item} onClick={close}>
+              <span className={icon}>
+                <Settings size={19} strokeWidth={1.9} />
+              </span>
+              <span className={navLabel}>Settings</span>
+            </PrefetchNavLink>
+          )}
+          {isIOSApp() && (
             <button
-              className={item}
+              className={`${item} w-full text-start`}
               onClick={() => {
                 close();
                 (window as Window & { webkit?: { messageHandlers?: { bitchord?: { postMessage: (m: unknown) => Promise<unknown> } } } }).webkit?.messageHandlers?.bitchord
@@ -190,11 +198,12 @@ export function Sidebar() {
               }}
             >
               <span className={icon}>
-                <Settings size={17} strokeWidth={1.9} />
+                <Activity size={19} strokeWidth={1.9} />
               </span>
               <span className={navLabel}>Diagnóstico</span>
             </button>
           )}
+          {!isIOSApp() && (
           <div className="flex items-center justify-between">
             {isIOSApp() ? (
               <span />
@@ -208,6 +217,7 @@ export function Sidebar() {
               <Settings size={17} strokeWidth={1.9} />
             </PrefetchNavLink>
           </div>
+          )}
         </div>
       </nav>
       {drawerOpen && <div className="absolute inset-0 z-[calc(var(--z-web-chrome)-1)] hidden bg-scrim max-sm:block" onClick={close} aria-hidden="true" />}

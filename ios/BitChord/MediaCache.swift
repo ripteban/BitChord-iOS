@@ -59,6 +59,7 @@ final class MediaCache {
     private var waiterEntry: [ObjectIdentifier: Entry] = [:]
     private let firstChunk = 512 * 1024
     private let chunk = 3 * 1024 * 1024
+    private let smallChunk = 256 * 1024
     private let maxEntries = 4
 
     private let session: URLSession = {
@@ -128,23 +129,29 @@ final class MediaCache {
 
     private func run(_ entry: Entry) async {
         var attempts = 0
+        // Large chunks while googlevideo allows them; a refused chunk is asked
+        // again in small pieces, so every byte the stream will give is had.
+        var size = firstChunk
         while !entry.finished {
             let from = entry.data.count
-            let size = from == 0 ? firstChunk : chunk
-            var to = from + size - 1
-            if let total = entry.total { to = min(to, total - 1) }
             if let total = entry.total, from >= total {
                 entry.finished = true
                 break
             }
+            var to = from + size - 1
+            if let total = entry.total { to = min(to, total - 1) }
             var request = NetRules.upstreamRequest(url: entry.upstream, method: "GET", headers: [:], body: nil)
             request.setValue("bytes=\(from)-\(to)", forHTTPHeaderField: "Range")
             do {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 guard http.statusCode == 206 || http.statusCode == 200 else {
+                    Diag.log("audio cache \(http.statusCode) at byte \(from) (chunk \(size / 1024) KB) of \(entry.total.map(String.init) ?? "?") \(AppSchemeHandler.short(entry.upstream))")
+                    if size > smallChunk {
+                        size = smallChunk
+                        continue
+                    }
                     attempts += 1
-                    Diag.log("audio cache \(http.statusCode) at byte \(from) of \(entry.total.map(String.init) ?? "?") \(AppSchemeHandler.short(entry.upstream))")
                     if attempts >= 2 {
                         entry.failure = (http.statusCode, "HTTP \(http.statusCode)")
                         break
@@ -162,6 +169,7 @@ final class MediaCache {
                 }
                 if http.statusCode == 200 { entry.data = data } else { entry.data.append(data) }
                 if data.isEmpty || (entry.total.map { entry.data.count >= $0 } ?? false) { entry.finished = true }
+                if size == firstChunk { size = chunk }
                 pump(entry)
             } catch {
                 attempts += 1
@@ -174,7 +182,11 @@ final class MediaCache {
             }
         }
         entry.downloading = false
-        if entry.finished { Diag.log("audio cache: whole track in memory (\(entry.data.count) bytes)") }
+        if entry.finished {
+            Diag.log("audio cache: whole track in memory (\(entry.data.count) bytes)")
+        } else if let failure = entry.failure {
+            Diag.log("audio cache stopped at \(entry.data.count) of \(entry.total.map(String.init) ?? "?") bytes: \(failure.message)")
+        }
         pump(entry)
     }
 
@@ -185,27 +197,20 @@ final class MediaCache {
             serve(waiter, from: entry)
         }
         entry.waiters.removeAll { waiter in
-            let done = waiter.offset > (waiter.end ?? Int.max) || (entry.total.map { waiter.offset >= $0 } ?? false)
-            if done || (entry.failure != nil) { waiterEntry.removeValue(forKey: ObjectIdentifier(waiter.task)) }
-            return done || entry.failure != nil
+            let done = waiter.offset == Int.max || waiter.offset > (waiter.end ?? Int.max)
+            if done { waiterEntry.removeValue(forKey: ObjectIdentifier(waiter.task)) }
+            return done
         }
     }
 
+    /// Answers [waiter] with every byte there is for it. A failed download still
+    /// serves what it got; the player only hears of the failure when it reaches it.
     private func serve(_ waiter: Waiter, from entry: Entry) {
-        if let failure = entry.failure {
-            if !waiter.responded {
-                let response = HTTPURLResponse(url: waiter.url, statusCode: failure.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/plain"])!
-                waiter.task.didReceive(response)
-                waiter.task.didReceive(Data(failure.message.utf8))
-                waiter.task.didFinish()
-            } else {
-                waiter.task.didFailWithError(URLError(.networkConnectionLost))
-            }
-            waiter.offset = Int.max
+        let available = entry.data.count
+        guard let total = entry.total else {
+            if let failure = entry.failure { fail(waiter, failure) }
             return
         }
-        // The answer's headers need the file's length.
-        guard let total = entry.total else { return }
         if waiter.end == nil || waiter.end! >= total { waiter.end = total - 1 }
         let end = waiter.end!
         if !waiter.responded {
@@ -214,6 +219,11 @@ final class MediaCache {
                 waiter.task.didReceive(response)
                 waiter.task.didFinish()
                 waiter.offset = Int.max
+                return
+            }
+            // Nothing for it yet, and nothing more will come: say so plainly.
+            if let failure = entry.failure, waiter.start >= available {
+                fail(waiter, failure)
                 return
             }
             var headers = [
@@ -228,8 +238,6 @@ final class MediaCache {
             waiter.task.didReceive(response)
             waiter.responded = true
         }
-        let available = entry.data.count
-        guard waiter.offset < available else { return }
         let upTo = min(end + 1, available)
         if upTo > waiter.offset {
             waiter.task.didReceive(entry.data.subdata(in: waiter.offset..<upTo))
@@ -237,7 +245,21 @@ final class MediaCache {
         }
         if waiter.offset > end {
             waiter.task.didFinish()
+        } else if let failure = entry.failure {
+            fail(waiter, failure)
         }
+    }
+
+    private func fail(_ waiter: Waiter, _ failure: (status: Int, message: String)) {
+        if waiter.responded {
+            waiter.task.didFailWithError(URLError(.networkConnectionLost))
+        } else {
+            let response = HTTPURLResponse(url: waiter.url, statusCode: failure.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/plain"])!
+            waiter.task.didReceive(response)
+            waiter.task.didReceive(Data(failure.message.utf8))
+            waiter.task.didFinish()
+        }
+        waiter.offset = Int.max
     }
 
     private func evict() {

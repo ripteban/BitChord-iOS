@@ -59,6 +59,8 @@ final class YouTubeAuth {
     }()
 
     private var cache: (list: [Account], webIndex: String?, at: Date)?
+    /// DATASYNC_ID per channel: what a signed-in session's PO tokens are bound to.
+    private var dataSyncIds: [String: String] = [:]
     private var reading: Task<(list: [Account], webIndex: String?), Never>?
     private var problem: String?
 
@@ -76,6 +78,7 @@ final class YouTubeAuth {
 
     func invalidate() {
         cache = nil
+        dataSyncIds.removeAll()
     }
 
     // MARK: Cookies and signing
@@ -312,6 +315,29 @@ final class YouTubeAuth {
             ?? web?.channels.first
     }
 
+    /// The account's DATASYNC_ID (ytcfg on YouTube Music's page, signed in as [channel]):
+    /// its first part is what YouTube binds a signed-in session's PO tokens to.
+    private func dataSyncId(for channel: Channel) async -> String? {
+        if let known = dataSyncIds[channel.id] { return known }
+        guard let (data, _) = try? await signedRequest(
+            url: URL(string: Self.musicOrigin + "/")!,
+            headers: ["Accept": "text/html"],
+            identity: Identity(authUser: channel.authUser, pageId: channel.pageId)
+        ), let html = String(data: data, encoding: .utf8),
+            let range = html.range(of: #""DATASYNC_ID":"[^"]*""#, options: .regularExpression)
+        else {
+            Diag.log("no DATASYNC_ID on YouTube Music's page")
+            return nil
+        }
+        // The separator may come escaped inside the page's JSON (backslash-u007c).
+        let raw = String(html[range].dropFirst("\"DATASYNC_ID\":\"".count).dropLast())
+            .replacingOccurrences(of: #"\u007c"#, with: "|")
+        let id = String(raw.split(separator: "|", omittingEmptySubsequences: true).first ?? "")
+        guard !id.isEmpty else { return nil }
+        dataSyncIds[channel.id] = id
+        return id
+    }
+
     // MARK: Bridge methods
 
     func authState(refresh: Bool = false) async -> [String: Any] {
@@ -323,6 +349,8 @@ final class YouTubeAuth {
         let read = await accounts(refresh: refresh)
         let active = chooseChannel(read)
         let problemJSON: Any = active == nil ? (problem.map { $0 as Any } ?? NSNull()) : NSNull()
+        var syncJSON: Any = NSNull()
+        if let active, let id = await dataSyncId(for: active) { syncJSON = id }
         var activeJSON: Any = NSNull()
         if let active {
             var json = active.publicJSON
@@ -339,6 +367,8 @@ final class YouTubeAuth {
                  "avatarUrl": account.avatarUrl ?? NSNull(), "channels": account.channels.map(\.publicJSON)]
             },
             "active": activeJSON,
+            // Not in the extension's contract: the iOS page binds signed-in PO tokens to it.
+            "dataSyncId": syncJSON,
         ]
     }
 

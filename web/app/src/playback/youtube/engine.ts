@@ -13,6 +13,7 @@ import {
   playerRequest,
   preferSignedPlayback,
   resolvePlayer,
+  streamingToken,
   UnplayableError,
   type PlayerClientName,
   type ResolvedPlayer,
@@ -313,7 +314,7 @@ export class YouTubeEngine {
     autoplay: boolean,
     generation: number,
   ): Promise<LoadedTrack | null> {
-    const { videoId, client, info } = resolved;
+    const { videoId, client, info, signed } = resolved;
     const formats = (info.streaming_data?.adaptive_formats ?? [])
       .filter((f) => f.has_audio && !f.has_video && /^audio\/mp4/.test(f.mime_type ?? '') && !f.is_drc)
       .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
@@ -321,7 +322,7 @@ export class YouTubeEngine {
     const sessionPlayer = this.yt?.session.player;
     if (!format || !sessionPlayer) return null;
     const url = new URL(await format.decipher(sessionPlayer));
-    const pot = usesWebPo(client) ? await botguard.mint(videoId) : undefined;
+    const pot = usesWebPo(client) ? await streamingToken(videoId, signed) : undefined;
     if (pot) url.searchParams.set('pot', pot);
     this.checkCurrent(generation);
 
@@ -407,7 +408,7 @@ export class YouTubeEngine {
    * YouTube.js deciphers each URL (signature and n parameter) with the player
    * script while rendering the manifest.
    */
-  private async directManifest({ videoId, client, info }: ResolvedPlayer): Promise<string> {
+  private async directManifest({ videoId, client, info, signed }: ResolvedPlayer): Promise<string> {
     // The SABR adapter's dispose() unregisters Shaka's http(s) schemes
     // outright; put Shaka's own fetch plugin back before a plain load.
     for (const scheme of ['http', 'https']) {
@@ -418,8 +419,9 @@ export class YouTubeEngine {
       );
     }
     // BotGuard clients attach the streaming token to every media URL, as
-    // InnerTubeX does on Android (`pot`, bound to the videoId).
-    const pot = usesWebPo(client) ? await botguard.mint(videoId) : undefined;
+    // InnerTubeX does on Android (`pot`, bound to the videoId; to the account
+    // when signed in, in the iOS app).
+    const pot = usesWebPo(client) ? await streamingToken(videoId, signed) : undefined;
     return info.toDash({
       format_filter: (format) => format.has_video || !format.has_audio,
       url_transformer: (url) => {
@@ -445,7 +447,7 @@ export class YouTubeEngine {
   async videoStream(height: number | null = null): Promise<VideoStream | null> {
     const resolved = this.direct;
     if (!resolved) return null;
-    const { videoId, client, info } = resolved;
+    const { videoId, client, info, signed } = resolved;
     const pictures = (info.streaming_data?.adaptive_formats ?? []).filter(
       (f) => f.has_video && !f.has_audio && f.width && f.height && (f.url || f.signature_cipher || f.cipher),
     );
@@ -453,7 +455,7 @@ export class YouTubeEngine {
     if (!largest || largest.width! / largest.height! < MIN_VIDEO_ASPECT) return null;
     const heights = [...new Set(pictures.map((f) => f.height!))].sort((a, b) => b - a);
     const wanted = height !== null && heights.includes(height) ? height : null;
-    const pot = usesWebPo(client) ? await botguard.mint(videoId) : undefined;
+    const pot = usesWebPo(client) ? await streamingToken(videoId, signed) : undefined;
     const manifest = await info.toDash({
       // YouTube.js drops the formats this returns true for.
       format_filter: (format) => !format.has_video || format.has_audio || (wanted !== null && format.height !== wanted),
