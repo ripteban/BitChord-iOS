@@ -11,6 +11,7 @@ import {
   usesWebPo,
   excludeClient,
   playerRequest,
+  preferSignedPlayback,
   resolvePlayer,
   UnplayableError,
   type PlayerClientName,
@@ -182,6 +183,11 @@ export class YouTubeEngine {
       let lastError: unknown = null;
       let yt = this.yt;
       let signed = false;
+      // iOS app, after a bot check: start signed in, where VISIONOS still answers.
+      if (preferSignedPlayback()) {
+        yt = await timed('signed-in InnerTube session', videoId, getSignedInnertube);
+        signed = true;
+      }
       for (let attempt = 0; attempt < CLIENT_ATTEMPTS; attempt++) {
         let resolved: ResolvedPlayer;
         try {

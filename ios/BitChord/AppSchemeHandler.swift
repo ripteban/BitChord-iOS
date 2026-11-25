@@ -29,6 +29,8 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
     private var byTask: [Int: WKURLSchemeTask] = [:]
     private var stopped = Set<ObjectIdentifier>()
     private var dataTaskFor: [ObjectIdentifier: URLSessionDataTask] = [:]
+    /// Scheme tasks answered by MediaCache (whole-file audio).
+    private var cachedTasks = Set<ObjectIdentifier>()
     /// Bytes received per proxy task, for the debug log.
     private var received: [Int: Int] = [:]
 
@@ -49,6 +51,10 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         let id = ObjectIdentifier(urlSchemeTask)
+        if cachedTasks.remove(id) != nil {
+            MainActor.assumeIsolated { MediaCache.shared.stop(urlSchemeTask) }
+            return
+        }
         stopped.insert(id)
         if let task = dataTaskFor.removeValue(forKey: id) {
             byTask.removeValue(forKey: task.taskIdentifier)
@@ -150,6 +156,11 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
             return
         }
         let incoming = task.request
+        if (incoming.httpMethod ?? "GET") == "GET", MediaCache.handles(upstream) {
+            cachedTasks.insert(ObjectIdentifier(task))
+            MainActor.assumeIsolated { MediaCache.shared.start(task, pageURL: url, upstream: upstream) }
+            return
+        }
         var body = incoming.httpBody
         if body == nil, let stream = incoming.httpBodyStream { body = Self.read(stream) }
         let request = NetRules.upstreamRequest(

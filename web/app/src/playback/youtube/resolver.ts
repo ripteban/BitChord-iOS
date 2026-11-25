@@ -2,6 +2,7 @@ import type { ApiResponse, Innertube, YT } from 'youtubei.js/web';
 import { trackLog } from '../trackLog';
 import { botguard } from './botguard';
 import { isIOSApp } from '@/lib/platform';
+import { ytAuthSnapshot } from '@/extension/useYtAuth';
 
 /**
  * Which identity asks YouTube for a track, in order (prompt §5.2 step 5,
@@ -198,6 +199,18 @@ const AGE_GATE = /confirm your age|age-restricted|inappropriate for some users|s
  */
 const BOT_CHECK = /not a bot/;
 
+/**
+ * iOS app: when YouTube bot-checked VISIONOS for this visitor (typical on a
+ * phone carrier's shared address), the next tracks go straight to the signed-in
+ * session for a while instead of paying for the refused request each time.
+ */
+let botCheckedAt = 0;
+const BOT_CHECK_MEMORY_MS = 30 * 60_000;
+
+export function preferSignedPlayback(): boolean {
+  return isIOSApp() && Date.now() - botCheckedAt < BOT_CHECK_MEMORY_MS && ytAuthSnapshot().signedIn;
+}
+
 function permanentReason(status: string | undefined, reason: string | undefined, signedIn: boolean): string | null {
   const text = (reason ?? '').toLowerCase();
   if (BOT_CHECK.test(text)) return null;
@@ -253,7 +266,16 @@ export async function resolvePlayer(
       }
       const reason = info.playability_status?.reason ?? (status === 'OK' ? 'no audio stream in the response' : status ?? 'no status');
       lastReason = reason;
-      botChecked ||= BOT_CHECK.test(reason.toLowerCase());
+      const bot = BOT_CHECK.test(reason.toLowerCase());
+      botChecked ||= bot;
+      // iOS app: VISIONOS is the client that plays whole tracks. Refused by the
+      // bot check, don't fall through to the web clients (they answer, but their
+      // streams stop at ~60-70 s): ask VISIONOS again as the signed-in user.
+      if (bot && client === 'VISIONOS' && !signed && isIOSApp() && ytAuthSnapshot().signedIn) {
+        botCheckedAt = Date.now();
+        excludeClient(videoId, client, `${status}: ${reason} (${ms}ms); asking again signed in`, signed);
+        throw new UnplayableError('YouTube asked to confirm this isn’t a bot; asking again signed in.', true);
+      }
       const verdict = permanentReason(status, reason, signed);
       if (verdict) {
         permanent = verdict;
@@ -261,6 +283,8 @@ export async function resolvePlayer(
       }
       excludeClient(videoId, client, `${status}: ${reason} (${ms}ms)`, signed);
     } catch (error) {
+      // The bot-check hand-off above (iOS app) is meant for the engine.
+      if (error instanceof UnplayableError) throw error;
       lastReason = String(error);
       excludeClient(videoId, client, `request failed: ${String(error)}`, signed);
     }

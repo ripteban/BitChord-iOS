@@ -1,7 +1,7 @@
 // Registers <am-lyrics>.
 import '@uimaxbai/am-lyrics/am-lyrics.js';
 import { isIOSApp } from '@/lib/platform';
-import { Check, ChevronDown, Loader2, Minus, Settings2 } from 'lucide-react';
+import { Check, ChevronDown, Download, Languages, Loader2, Minus, Settings2, Speech } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useCanvas } from '@/data/spotify/canvas';
 import { getBridge } from '@/extension/bridge';
@@ -16,6 +16,12 @@ import { getAudio, getPlayhead, usePlayer } from '@/state/player';
 import { LyricsSettings } from './LyricsSettings';
 
 type AmLyricsElement = HTMLElement & {
+  showRomanization?: boolean;
+  showTranslation?: boolean;
+  downloadFormat?: string;
+  toggleRomanization?: () => Promise<void> | void;
+  toggleTranslation?: () => Promise<void> | void;
+  downloadLyrics?: () => void;
   currentTime: number;
   ttml?: string;
   interpolate: boolean;
@@ -32,6 +38,16 @@ type AmLyricsElement = HTMLElement & {
  * so the lyrics never scrolled.
  */
 const HIDE_FOOTER = '.lyrics-footer { visibility: hidden !important; pointer-events: none !important; }';
+
+/**
+ * am-lyrics' own toolbar (romanize, translate, download format, download) sits
+ * inside its scroller and scrolls away with the lines. Ours replaces it, in one
+ * fixed row with the provider picker (LyricsToolbar below).
+ */
+const HIDE_HEADER = '.lyrics-header { display: none !important; }';
+
+/** The lyrics element on screen, for the fixed toolbar's buttons. */
+const lyricsElement: { current: AmLyricsElement | null } = { current: null };
 
 /** The phone's lyric typeface (@font-face in styles/global.css), then the app's. */
 const LYRIC_FONT = "'BitChord SF Pro Display', 'DM Sans', system-ui, sans-serif";
@@ -129,12 +145,13 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
     el.addEventListener('line-click', onLineClick);
     host.current?.append(el);
     element.current = el;
+    lyricsElement.current = el;
     const unmounted = new AbortController();
     void Promise.resolve(el.updateComplete).then(() => {
       const root = el.shadowRoot;
       if (!root) return;
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(HIDE_FOOTER + FAR_LINES + FULL_SIZE);
+      sheet.replaceSync(HIDE_FOOTER + HIDE_HEADER + FAR_LINES + FULL_SIZE);
       root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
       // The full-screen column fades its top edge, but am-lyrics' toolbar
       // (romanize, translate, download) sits at the top of the same scroller
@@ -152,6 +169,7 @@ function LyricsView({ ttml, full }: { ttml: string; full: boolean }) {
       el.removeEventListener('line-click', onLineClick);
       el.remove();
       element.current = null;
+      if (lyricsElement.current === el) lyricsElement.current = null;
     };
     // Mounted once; a new provider's TTML is handed over below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -261,7 +279,7 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
     <div
       className={
         full
-          ? 'flex items-center justify-between pb-1 opacity-0 transition-opacity duration-200 group-hover/panel:opacity-100 focus-within:opacity-100'
+          ? 'flex items-center justify-between gap-1 pb-1 opacity-0 transition-opacity duration-200 group-hover/panel:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100'
           : 'flex items-center justify-between px-4 pt-4 pb-1'
       }
     >
@@ -273,13 +291,7 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
         <span>{label}</span>
         <ChevronDown size={14} />
       </button>
-      <button
-        className="grid size-7 place-items-center rounded-[8px] text-secondary hover:bg-quinary"
-        aria-label="Lyric settings"
-        onClick={() => setSettings(true)}
-      >
-        <Settings2 size={16} />
-      </button>
+      <LyricsToolbar onSettings={() => setSettings(true)} />
       {anchor && (
         <Menu anchor={anchor} placement="below-end" onClose={close} label="Lyrics provider">
           <MenuItem checked={!picked} onSelect={() => (close(), pick(videoId, null))}>
@@ -313,6 +325,82 @@ function ProviderPicker({ current, full }: { current: LyricsSourceId | null; ful
         </Menu>
       )}
       {settings && <LyricsSettings onClose={() => setSettings(false)} />}
+    </div>
+  );
+}
+
+const toolButton =
+  'grid size-8 flex-none place-items-center rounded-[8px] text-secondary hover:bg-quinary aria-pressed:bg-quinary aria-pressed:text-primary';
+
+/**
+ * The lyrics' own controls, in the provider picker's row so they stay put
+ * while the lines scroll: romanize and translate beside the picker, the
+ * download format, download and settings at the end.
+ */
+function LyricsToolbar({ onSettings }: { onSettings: () => void }) {
+  const [romanized, setRomanized] = useState(false);
+  const [translated, setTranslated] = useState(false);
+  const [format, setFormat] = useState('auto');
+  const videoId = usePlayer((s) => s.nowPlaying?.videoId ?? '');
+  // A new track starts in the original lyrics, as am-lyrics does.
+  useEffect(() => {
+    setRomanized(false);
+    setTranslated(false);
+  }, [videoId]);
+  const el = () => lyricsElement.current;
+  return (
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-1">
+      <div className="flex items-center gap-0.5">
+        <button
+          className={toolButton}
+          aria-label="Romanize lyrics"
+          aria-pressed={romanized}
+          onClick={() => {
+            const e = el();
+            if (!e?.toggleRomanization) return;
+            void e.toggleRomanization();
+            setRomanized(!!e.showRomanization);
+          }}
+        >
+          <Speech size={16} />
+        </button>
+        <button
+          className={toolButton}
+          aria-label="Translate lyrics"
+          aria-pressed={translated}
+          onClick={() => {
+            const e = el();
+            if (!e?.toggleTranslation) return;
+            void e.toggleTranslation();
+            setTranslated(!!e.showTranslation);
+          }}
+        >
+          <Languages size={16} />
+        </button>
+      </div>
+      <div className="flex items-center gap-0.5">
+        <select
+          className="h-7 rounded-[8px] border border-quaternary bg-transparent px-1.5 type-callout text-secondary"
+          aria-label="Lyrics download format"
+          value={format}
+          onChange={(event) => {
+            setFormat(event.target.value);
+            const e = el();
+            if (e) e.downloadFormat = event.target.value;
+          }}
+        >
+          <option value="auto">Auto</option>
+          <option value="lrc">LRC</option>
+          <option value="ttml">TTML</option>
+          <option value="plain">Plain</option>
+        </select>
+        <button className={toolButton} aria-label="Download lyrics" onClick={() => el()?.downloadLyrics?.()}>
+          <Download size={16} />
+        </button>
+        <button className={toolButton} aria-label="Lyric settings" onClick={onSettings}>
+          <Settings2 size={16} />
+        </button>
+      </div>
     </div>
   );
 }
