@@ -92,6 +92,7 @@ jobs:
           grep -E "autotest|translate test|iframe_api test|ProMotion|player failed" smoke/console.log | cut -c1-260 || true
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: smoke-test
@@ -116,6 +117,7 @@ jobs:
           ls uitest-shots | head -20
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: uitest-shots
@@ -123,6 +125,7 @@ jobs:
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: uitest-result
@@ -143,6 +146,7 @@ jobs:
           ls -lh BitChord.ipa
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: BitChord-ipa
           path: ios/BitChord.ipa
