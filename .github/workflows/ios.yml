@@ -65,6 +65,8 @@ jobs:
           # idb: real touches in the simulator (taps the mini player like a finger would).
           brew tap facebook/fb >/dev/null && brew install idb-companion >/dev/null || true
           python3 -m pip install --break-system-packages fb-idb >/dev/null 2>&1 || python3 -m pip install fb-idb >/dev/null 2>&1 || true
+          # The idb client looks for its companion in /usr/local/bin; Apple Silicon Homebrew lives in /opt/homebrew.
+          sudo mkdir -p /usr/local/bin && sudo ln -sf "$(brew --prefix)/bin/idb_companion" /usr/local/bin/idb_companion || true
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
           echo "Simulator $UDID"
           xcrun simctl boot "$UDID"
