@@ -1,0 +1,114 @@
+name: iOS
+
+# Builds the iOS app (ios/): the web player (web/app) bundled into a native
+# WKWebView shell. Runs a simulator smoke test, then produces an unsigned
+# BitChord.ipa to sideload with AltStore / SideStore / Sideloadly.
+on:
+  push:
+    branches: [ios]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Build the web app
+        working-directory: web
+        env:
+          VITE_PARTY_SERVER_URL: https://api.bitchord.kushagrasingh.in
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @bitchord/app build
+          rm -rf ../ios/www
+          cp -R app/dist ../ios/www
+          du -sh ../ios/www
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -version
+
+      - name: Build for the simulator
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project BitChord.xcodeproj -scheme BitChord -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim CODE_SIGNING_ALLOWED=NO build | tail -40
+
+      - name: Simulator smoke test
+        working-directory: ios
+        continue-on-error: true
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
+          echo "Simulator $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build/sim -name 'BitChord.app' -type d | head -1)
+          xcrun simctl install "$UDID" "$APP"
+          mkdir -p smoke
+          xcrun simctl launch --console-pty "$UDID" com.music.bitchord.ios -route /debug -autotest > smoke/console.log 2>&1 &
+          sleep 30; xcrun simctl io "$UDID" screenshot smoke/30s.png
+          sleep 30; xcrun simctl io "$UDID" screenshot smoke/60s.png
+          sleep 40; xcrun simctl io "$UDID" screenshot smoke/100s.png
+          xcrun simctl launch "$UDID" com.music.bitchord.ios -route /search >/dev/null 2>&1 || true
+          sleep 10; xcrun simctl io "$UDID" screenshot smoke/home.png
+          grep -E "BitChord" smoke/console.log | grep -vE "js:log\] \[track" | head -300 || true
+          echo "----- autotest -----"
+          grep autotest smoke/console.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test
+          path: ios/smoke
+          if-no-files-found: ignore
+
+      - name: Build the unsigned IPA
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project BitChord.xcodeproj -scheme BitChord -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -40
+          APP=$(find build/device -name 'BitChord.app' -type d -path '*Release-iphoneos*' | head -1)
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qry BitChord.ipa Payload
+          ls -lh BitChord.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-ipa
+          path: ios/BitChord.ipa
+
+      - name: Publish as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="ios-build-${{ github.run_number }}"
+          gh release create "$TAG" ios/BitChord.ipa --target "${{ github.sha }}" \
+            --title "BitChord iOS (build ${{ github.run_number }})" \
+            --notes "Unsigned IPA. Install it with AltStore, SideStore or Sideloadly." --prerelease

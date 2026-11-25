@@ -1,0 +1,6 @@
+www/
+build/
+smoke/
+Payload/
+*.ipa
+BitChord.xcodeproj/

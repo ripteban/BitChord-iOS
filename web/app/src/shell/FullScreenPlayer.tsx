@@ -252,7 +252,7 @@ export function FullScreenPlayer() {
         </div>
       )}
 
-      <button ref={close} className={`${corner} top-4 left-5`} aria-label="Close" onClick={() => setFullScreen(false)}>
+      <button ref={close} className={`${corner} top-[calc(16px+env(safe-area-inset-top))] left-5`} aria-label="Close" onClick={() => setFullScreen(false)}>
         <X size={20} />
       </button>
       {/* The music video's quality, just inside the full-screen button. */}
@@ -274,7 +274,7 @@ export function FullScreenPlayer() {
         className={
           theater
             ? `absolute inset-x-0 bottom-0 flex justify-center bg-[linear-gradient(to_top,rgb(0_0_0/0.72),rgb(0_0_0/0.35)_55%,transparent)] px-6 pt-32 pb-16 transition-opacity duration-300${hidden}`
-            : `grid h-full items-center justify-center gap-x-[clamp(48px,7vw,144px)] px-[clamp(24px,9vw,144px)] py-16 max-md:px-6 max-md:pb-18 ${
+            : `grid h-full items-center justify-center gap-x-[clamp(48px,7vw,144px)] px-[clamp(24px,9vw,144px)] py-16 max-md:px-6 max-md:pb-18 max-sm:pt-[calc(64px+env(safe-area-inset-top))] max-sm:pb-[calc(72px+env(safe-area-inset-bottom))] ${
                 column
                   ? 'grid-cols-[var(--art)_minmax(0,38vw)] max-md:grid-cols-[minmax(0,1fr)] max-md:grid-rows-[minmax(0,1fr)_auto] max-md:items-stretch max-md:gap-y-4'
                   : 'grid-cols-[var(--art)]'
@@ -392,7 +392,7 @@ export function FullScreenPlayer() {
       </div>
 
       <button
-        className={`${corner} bottom-5 left-5 aria-pressed:text-primary`}
+        className={`${corner} bottom-[calc(20px+env(safe-area-inset-bottom))] left-5 aria-pressed:text-primary`}
         aria-label="Lyrics"
         aria-pressed={showLyrics}
         onClick={() => togglePanel('lyrics')}
@@ -401,7 +401,7 @@ export function FullScreenPlayer() {
       </button>
       {/* Up Next, with the speaker beside it: the level slides in over Up Next, as it does in the pill. */}
       <div
-        className={`group/actions absolute right-5 bottom-5 z-1 flex items-center [--volume-gap:36px] transition-opacity duration-300${hidden}`}
+        className={`group/actions absolute right-5 bottom-[calc(20px+env(safe-area-inset-bottom))] z-1 flex items-center [--volume-gap:36px] transition-opacity duration-300${hidden}`}
         data-volume-open={volumeOpen || undefined}
         onPointerLeave={() => setVolumeOpen(false)}
         onBlur={(event) => {

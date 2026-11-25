@@ -12,12 +12,15 @@ import { isMobileBrowser } from '@/lib/platform';
 import { useUi } from '@/state/ui';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { Banner, bannerButtonClass } from './Banner';
+import { MobilePlayer } from './MobilePlayer';
 import { MobileTopBar } from './MobileTopBar';
 import { PlayerBar } from './PlayerBar';
 import { SidePanel } from './SidePanel';
 import { Sidebar } from './Sidebar';
 
-const mobile = isMobileBrowser();
+// The iOS app (ios/) runs this page with its own bridge, so it is no phone browser to nag.
+const iosApp = typeof window !== 'undefined' && (window as Window & { __bitchordIOS?: boolean }).__bitchordIOS === true;
+const mobile = isMobileBrowser() && !iosApp;
 
 // It carries am-lyrics; loaded the first time it opens, as the side panel's lyrics are.
 const FullScreenPlayer = lazy(() => import('./FullScreenPlayer').then((m) => ({ default: m.FullScreenPlayer })));
@@ -83,11 +86,12 @@ export function AppShell() {
           className="absolute inset-0 overflow-x-hidden overflow-y-auto pl-(--web-navigation-width) [scrollbar-gutter:stable] data-tint:bg-(--page-tint) data-tint:transition-[background-color] data-tint:duration-300 data-tint:ease-in max-sm:pt-(--mobile-top-bar-height) max-sm:pl-0"
         >
           {/* Clears the floating pill: its height, its offset, and some air. */}
-          <div className="min-h-full pb-[calc(var(--player-pill-height)+var(--player-bottom-offset)+40px)]">
+          <div className="min-h-full pb-[calc(var(--player-pill-height)+var(--player-bottom-offset)+40px)] max-sm:pb-[calc(var(--mobile-bottom-chrome)+24px)]">
             <Outlet />
           </div>
         </main>
         <PlayerBar />
+        <MobilePlayer />
         <SidePanel />
       </div>
       {banner}
