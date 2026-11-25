@@ -73,24 +73,34 @@ jobs:
           xcrun simctl install "$UDID" "$APP"
           mkdir -p smoke
           xcrun simctl launch --console-pty "$UDID" com.music.bitchord.ios -route /debug -autotest > smoke/console.log 2>&1 &
-          sleep 22; xcrun simctl io "$UDID" screenshot smoke/1-mini.png
-          # Where the mini player is, from the app's own probe at 20s (CSS px = points).
-          XY=$(grep -o '"mini":{"x":[0-9]*,"y":[0-9]*}' smoke/console.log | tail -1 | grep -o '[0-9]\+' | tr '\n' ' ')
+          # Wait (up to 90s) for the app's probe to report where the mini player is (CSS px = points).
+          XY=""
+          for i in $(seq 1 45); do
+            XY=$(grep -o '"mini":{"x":[0-9]*,"y":[0-9]*}' smoke/console.log | tail -1 | grep -o '[0-9]\+' | tr '\n' ' ')
+            [ -n "$XY" ] && break
+            sleep 2
+          done
           echo "mini player at: $XY"
+          xcrun simctl io "$UDID" screenshot smoke/1-mini.png
+          echo "idb: $(command -v idb || echo missing)"
           if [ -n "$XY" ] && command -v idb >/dev/null; then
-            idb connect "$UDID" >/dev/null 2>&1 || true
-            idb ui tap --udid "$UDID" $XY && echo "tapped mini player"
+            idb ui tap --udid "$UDID" $XY 2>&1 && echo "tapped mini player"
+            sleep 6; xcrun simctl io "$UDID" screenshot smoke/2-after-tap.png
+            # Close, then swipe up on the mini player.
+            idb ui tap --udid "$UDID" 30 75 2>&1 && echo "tapped close"
+            sleep 3
+            set -- $XY
+            idb ui swipe --udid "$UDID" "$1" "$2" "$1" $(( $2 - 160 )) --duration 0.25 2>&1 && echo "swiped up"
+            sleep 6; xcrun simctl io "$UDID" screenshot smoke/3-after-swipe.png
           else
             echo "no idb or no mini player position"
           fi
-          sleep 8; xcrun simctl io "$UDID" screenshot smoke/2-after-tap.png
-          sleep 20; xcrun simctl io "$UDID" screenshot smoke/3-later.png
-          sleep 45
+          sleep 50
           xcrun simctl launch "$UDID" com.music.bitchord.ios -route /search >/dev/null 2>&1 || true
           sleep 10; xcrun simctl io "$UDID" screenshot smoke/home.png
           grep -E "BitChord\]" smoke/console.log | grep -vE "\[net\]" | head -150 || true
           echo "----- autotest -----"
-          grep -E "autotest|translate test|iframe_api test|ProMotion|player failed" smoke/console.log || true
+          grep -E "autotest|translate test|iframe_api test|ProMotion|player failed" smoke/console.log | cut -c1-260 || true
 
       - uses: actions/upload-artifact@v4
         if: always()

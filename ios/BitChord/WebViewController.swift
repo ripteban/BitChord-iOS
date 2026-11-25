@@ -207,7 +207,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { eval(probe, "probe@6s") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { eval(click, "click@8s") }
         // The CI script taps the mini player for real (idb) around 25s; these show the result.
-        for t in [20.0, 32.0, 45.0, 90.0] {
+        for t in stride(from: 12.0, through: 100.0, by: 4.0) {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { eval(probe, "probe@\(Int(t))s") }
         }
     }
