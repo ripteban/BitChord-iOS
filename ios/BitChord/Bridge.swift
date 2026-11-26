@@ -137,6 +137,18 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                 } catch {
                     return fail("internal", "po token: \(error.localizedDescription)")
                 }
+            case "ios.offlineList":
+                return ok(OfflineStore.shared.list)
+            case "ios.offlineSave":
+                guard let videoId = params["videoId"] as? String, let b64 = params["data"] as? String,
+                      let data = Data(base64Encoded: b64), !data.isEmpty
+                else { return fail("internal", "ios.offlineSave needs a videoId and data") }
+                return ok(try OfflineStore.shared.save(videoId: videoId, data: data, permanent: params["permanent"] as? Bool == true, meta: params))
+            case "ios.offlinePin":
+                return ok(try OfflineStore.shared.pin(params["videoId"] as? String ?? ""))
+            case "ios.offlineDelete":
+                OfflineStore.shared.remove(params["videoId"] as? String ?? "")
+                return ok([String: Any]())
             case "ios.http":
                 // The iOS resolver's player requests, as any InnerTube client (iosResolver.ts).
                 let url = params["url"] as? String ?? ""

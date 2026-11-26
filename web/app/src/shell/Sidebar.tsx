@@ -1,4 +1,4 @@
-import { Activity, ArrowUpRight, ListMusic, Settings } from 'lucide-react';
+import { Activity, ArrowUpRight, Download, ListMusic, Settings } from 'lucide-react';
 import { MdOutlineExtension } from 'react-icons/md';
 import { PrefetchLink, PrefetchNavLink } from '@/components/PrefetchLink';
 import { LogoMark } from '@/components/icons/LogoMark';
@@ -179,6 +179,14 @@ export function Sidebar() {
           </PrefetchNavLink>
           )}
           <AccountButton />
+          {isIOSApp() && (
+            <PrefetchNavLink to="/downloads" className={item} onClick={close}>
+              <span className={icon}>
+                <Download size={19} strokeWidth={1.9} />
+              </span>
+              <span className={navLabel}>Descargas</span>
+            </PrefetchNavLink>
+          )}
           {isIOSApp() && (
             <PrefetchNavLink to="/settings" className={item} onClick={close}>
               <span className={icon}>

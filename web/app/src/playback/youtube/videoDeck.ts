@@ -95,6 +95,9 @@ export function followVideo(engine: YouTubeEngine, audio: HTMLAudioElement): voi
 }
 
 /** Nothing is playing: drop the picture. */
+/** The picture's SABR session, when its track plays over SABR. */
+let sabrAdapter: { dispose(): void } | null = null;
+
 export function stopVideo(): void {
   source = null;
   void refresh();
@@ -126,6 +129,8 @@ async function refresh(): Promise<void> {
   try {
     const shakaPlayer = await ensurePlayer();
     configureQuality(shakaPlayer, quality);
+    // A track playing over SABR: the picture gets its own SABR session.
+    if (stream.sabr) sabrAdapter = await stream.sabr(shakaPlayer);
     await shakaPlayer.load(`data:application/dash+xml;base64,${btoa(stream.manifest)}`, resumeAt, 'application/dash+xml');
     if (run !== generation) return;
     if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -153,6 +158,8 @@ async function refresh(): Promise<void> {
 
 /** Stops the picture player; [keepPicture] leaves the surface showing, for a reload of the same video. */
 async function unload(keepPicture = false): Promise<void> {
+  sabrAdapter?.dispose();
+  sabrAdapter = null;
   if (timer) clearInterval(timer);
   timer = null;
   loaded = null;

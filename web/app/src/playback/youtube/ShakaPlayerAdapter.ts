@@ -40,6 +40,33 @@ interface ShakaResponseArgs {
 
 export class ShakaPlayerAdapter implements SabrPlayerAdapter {
   protected player: shaka.Player | null = null;
+
+  /**
+   * Shaka's scheme plugins are global, so a second adapter (the music video's
+   * SABR session, beside the audio's) would take over the first one's requests.
+   * Each player's requests are tagged with their adapter, and one dispatcher
+   * hands each request to its own.
+   */
+  private static readonly adapters = new Map<string, ShakaPlayerAdapter>();
+  private static nextId = 0;
+  private static readonly TAG = 'x-bitchord-adapter';
+  private readonly adapterId = String(++ShakaPlayerAdapter.nextId);
+  private tagFilter: shaka.extern.RequestFilter | null = null;
+
+  private static dispatch(
+    uri: string,
+    request: shaka.extern.Request,
+    requestType: shaka.net.NetworkingEngine.RequestType,
+    progressUpdated: shaka.extern.ProgressUpdated,
+    headersReceived: shaka.extern.HeadersReceived,
+    config: shaka.extern.SchemePluginConfig,
+  ): shaka.extern.IAbortableOperation<shaka.extern.Response> {
+    const id = request.headers[ShakaPlayerAdapter.TAG];
+    delete request.headers[ShakaPlayerAdapter.TAG];
+    const adapter = id ? ShakaPlayerAdapter.adapters.get(id) : undefined;
+    if (!adapter) return shaka.net.HttpFetchPlugin.parse(uri, request, requestType, progressUpdated, headersReceived, config);
+    return adapter.parseRequest(uri, request, requestType, progressUpdated, headersReceived, config);
+  }
   private requestMetadataManager?: RequestMetadataManager;
   private cacheManager?: CacheManager;
   private abortController?: AbortController;
@@ -62,11 +89,13 @@ export class ShakaPlayerAdapter implements SabrPlayerAdapter {
     if (!shaka.net.HttpFetchPlugin.isSupported())
       throw new Error('The Fetch API is not supported in this browser.');
 
+    ShakaPlayerAdapter.adapters.set(this.adapterId, this);
+    this.tagFilter = (_type, req) => {
+      req.headers[ShakaPlayerAdapter.TAG] = this.adapterId;
+    };
+    player.getNetworkingEngine()?.registerRequestFilter(this.tagFilter);
     schemes.forEach((scheme) => {
-      networkingEngine.registerScheme(
-        scheme, this.parseRequest.bind(this),
-        networkingEngine.PluginPriority.PREFERRED
-      );
+      networkingEngine.registerScheme(scheme, ShakaPlayerAdapter.dispatch, networkingEngine.PluginPriority.PREFERRED);
     });
   }
 
@@ -496,8 +525,14 @@ export class ShakaPlayerAdapter implements SabrPlayerAdapter {
         networkingEngine.unregisterResponseFilter(this.responseFilter);
       }
 
-      shaka.net.NetworkingEngine.unregisterScheme('http');
-      shaka.net.NetworkingEngine.unregisterScheme('https');
+      if (networkingEngine && this.tagFilter) networkingEngine.unregisterRequestFilter(this.tagFilter);
+      this.tagFilter = null;
+      ShakaPlayerAdapter.adapters.delete(this.adapterId);
+      // The schemes are everyone's: only the last adapter out takes them down.
+      if (ShakaPlayerAdapter.adapters.size === 0) {
+        shaka.net.NetworkingEngine.unregisterScheme('http');
+        shaka.net.NetworkingEngine.unregisterScheme('https');
+      }
 
       this.player = null;
     }

@@ -82,6 +82,8 @@ async function httpExchange(p, ytApi) {
 }
 
 const ok = (result) => ({ ok: true, result });
+/** The iOS app's offline store, in memory. */
+const offline = new Map();
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 
 async function bridge(method, params) {
@@ -93,6 +95,18 @@ async function bridge(method, params) {
         if (!String(params.url).startsWith('https://www.youtube.com/api/jnn/')) return fail('forbidden', 'nope');
         return ok(await httpExchange(params, true));
       case 'yt.authState': return ok({ browserSignedIn: false, connected: false, signedIn: false, accounts: [], active: null, problem: null });
+      case 'ios.offlineList': return ok([...offline.values()].map(({ data, ...meta }) => meta));
+      case 'ios.offlineSave': {
+        const data = Buffer.from(params.data, 'base64');
+        const entry = { videoId: params.videoId, title: params.title, artist: params.artist, album: params.album ?? null,
+          artworkUrl: params.artworkUrl ?? null, durationSec: params.durationSec ?? 0, permanent: !!params.permanent,
+          bytes: data.length, savedAt: Date.now(), data };
+        offline.set(params.videoId, entry);
+        console.log(`[offline] saved ${params.videoId} ${data.length} bytes permanent=${entry.permanent}`);
+        const { data: _, ...meta } = entry; return ok(meta);
+      }
+      case 'ios.offlinePin': { const e = offline.get(params.videoId); if (!e) return fail('internal', 'not saved'); e.permanent = true; const { data: _, ...meta } = e; return ok(meta); }
+      case 'ios.offlineDelete': offline.delete(params.videoId); return ok({});
       case 'ios.http':
         if (params.auth) return fail('unauthenticated', 'no account in the desktop harness');
         return ok(await httpExchange(params, false));
@@ -133,6 +147,17 @@ createServer(async (req, res) => {
       const reply = await native(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ reply }));
       return;
+    }
+    if (url.pathname.startsWith('/__local/')) {
+      const e = offline.get(decodeURIComponent(url.pathname.slice(9)));
+      if (!e) { res.writeHead(404).end('Not saved'); return; }
+      const m = /bytes=(\d+)-(\d*)/.exec(req.headers.range ?? '');
+      if (m) {
+        const start = Number(m[1]); const end = m[2] ? Math.min(Number(m[2]), e.data.length - 1) : e.data.length - 1;
+        res.writeHead(206, { 'content-type': 'audio/mp4', 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${e.data.length}`, 'content-length': end - start + 1 });
+        res.end(e.data.subarray(start, end + 1)); return;
+      }
+      res.writeHead(200, { 'content-type': 'audio/mp4', 'accept-ranges': 'bytes', 'content-length': e.data.length }).end(e.data); return;
     }
     if (url.pathname.startsWith('/__net/')) {
       const target = url.searchParams.get('u');

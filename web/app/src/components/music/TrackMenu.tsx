@@ -1,6 +1,8 @@
 import { ChevronLeft, ChevronRight, ListEnd, ListPlus, ListStart, MoreHorizontal, Star } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Menu, MenuHeader, MenuItem, MenuSeparator, type MenuPlacement } from '@/components/Menu';
+import { Download, Trash2 } from 'lucide-react';
+import { offlineAvailable, removeOffline, saveOffline, useOffline } from '@/playback/offline';
 import {
   useAddToPlaylist,
   useLikeStatus,
@@ -76,6 +78,42 @@ function AccountItems({ track, onClose, onPlaylists }: { track: Track; onClose: 
   );
 }
 
+/** iOS app: keep the track on the phone for good, or let it go. */
+function DownloadItem({ track, onClose }: { track: Track; onClose: () => void }) {
+  const saved = useOffline((s) => s.tracks[track.videoId]);
+  const saving = useOffline((s) => s.saving[track.videoId]);
+  if (!offlineAvailable()) return null;
+  if (saved?.permanent) {
+    return (
+      <MenuItem icon={<Trash2 size={15} />} onSelect={() => (onClose(), void removeOffline(track.videoId))}>
+        Quitar descarga
+      </MenuItem>
+    );
+  }
+  return (
+    <MenuItem
+      icon={<Download size={15} />}
+      disabled={saving !== undefined}
+      onSelect={() => {
+        onClose();
+        void saveOffline(
+          {
+            videoId: track.videoId,
+            title: track.title,
+            artist: track.artists.map((a) => a.name).join(', '),
+            album: track.album?.name ?? null,
+            artworkUrl: track.thumbnail,
+            durationSec: track.durationSec,
+          },
+          true,
+        ).catch(() => undefined);
+      }}
+    >
+      {saving !== undefined ? `Descargando… ${Math.round(saving * 100)}%` : 'Descargar'}
+    </MenuItem>
+  );
+}
+
 function TrackMenuItems({ track, onClose }: { track: Track; onClose: () => void }) {
   const [view, setView] = useState<'main' | 'playlists'>('main');
   const signedIn = useSignedIn();
@@ -85,6 +123,7 @@ function TrackMenuItems({ track, onClose }: { track: Track; onClose: () => void 
   const { playNext, addToQueue } = usePlayer.getState();
   return (
     <>
+      <DownloadItem track={track} onClose={onClose} />
       <MenuItem icon={<ListStart size={15} />} onSelect={() => (onClose(), playNext([track]))}>
         Play Next
       </MenuItem>

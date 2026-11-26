@@ -7,12 +7,15 @@ import { botguard } from './botguard';
 import { ytAuthSnapshot } from '@/extension/useYtAuth';
 import { getInnertube, getSignedInnertube } from './innertube';
 import { markBroken, resolveVerified } from './iosResolver';
+import { offlineTrack, offlineUrl } from '../offline';
 import {
   CLIENT_ATTEMPTS,
+  DEBUG_CLIENTS_KEY,
   usesWebPo,
   excludeClient,
   playerRequest,
   preferSignedPlayback,
+  forgetResponse,
   resolvePlayer,
   streamingToken,
   UnplayableError,
@@ -53,6 +56,8 @@ export interface StreamStats {
 export interface VideoStream {
   videoId: string;
   manifest: string;
+  /** For a SABR picture: puts its own SABR session in front of the picture's player, before the load. */
+  sabr?: (player: shaka.Player) => Promise<SabrStreamingAdapter>;
   /** Width over height of the largest rendition, e.g. 16/9. */
   aspect: number;
   /** Every height the response offers, largest first: what the quality switcher lists. */
@@ -105,6 +110,31 @@ export class YouTubeEngine {
   private current: { videoId: string; client: PlayerClientName; signed: boolean } | null = null;
   /** The response the playing track streams from, when it has direct URLs; the video picture comes from it too. */
   private direct: ResolvedPlayer | null = null;
+  /** The response the playing track streams from over SABR; the picture can stream from it too. */
+  private sabrSource: ResolvedPlayer | null = null;
+  /**
+   * iOS app: the SABR track's audio as it arrives (init + segments), saved
+   * whole for offline once complete (playback/offline.ts).
+   */
+  private capture: {
+    videoId: string;
+    title: string;
+    author: string;
+    duration: number;
+    thumbnail: string | null;
+    init: Uint8Array | null;
+    segments: Map<number, { start: number; end: number; data: Uint8Array }>;
+    done: boolean;
+  } | null = null;
+  /** A download's engine: buffers the whole track at once (captureTrack). */
+  bufferAll = false;
+  /** The playing track's direct audio URL (native path): what a download fetches whole. */
+  nativeUrl: string | null = null;
+  /** Called once a SABR track's audio is complete, with the playable file. */
+  onCaptured: (videoId: string, bytes: Uint8Array, meta: { title: string; author: string; duration: number; thumbnail: string | null }) => void =
+    (videoId, bytes, meta) => {
+      void import('../offline').then((m) => m.storeCaptured(videoId, bytes, meta));
+    };
   private preferredCodecs: string[];
   /** The element plays a plain src (NATIVE_DIRECT); Shaka is detached from it. */
   private nativeSrc = false;
@@ -155,6 +185,12 @@ export class YouTubeEngine {
       },
     });
     await player.attach(this.audio);
+    if (NATIVE_DIRECT) {
+      // Everything played stays in the buffer, so the offline copy is complete by
+      // the end; a download's own engine (captureTrack) buffers the whole track.
+      player.configure({ streaming: { bufferBehind: 900, ...(this.bufferAll && { bufferingGoal: 900 }) } });
+      player.getNetworkingEngine()?.registerResponseFilter((type, response, context) => this.collect(type, response, context));
+    }
     player.addEventListener('error', (event) => this.onShakaError((event as unknown as { detail: shaka.util.Error }).detail));
     this.player = player;
     return player;
@@ -178,11 +214,24 @@ export class YouTubeEngine {
     trackLog.i(`loading at ${startSec.toFixed(1)}s`, videoId);
     try {
       const player = await this.ensurePlayer();
+      // iOS app: a track saved on the phone plays from its file, at once.
+      if (NATIVE_DIRECT) {
+        const local = await this.startLocal(player, videoId, startSec, autoplay, generation).catch((error: unknown) => {
+          if (error instanceof SupersededError) throw error;
+          trackLog.w(`saved file didn't play: ${describe(error)}`, videoId);
+          return null;
+        });
+        if (local) {
+          trackLog.i(`playing the saved file, first audio after ${Math.round(performance.now() - started)}ms`, videoId);
+          return local;
+        }
+      }
+
       this.yt ??= await timed('InnerTube session', videoId, getInnertube);
       void botguard.init().catch((error: unknown) => trackLog.w(`BotGuard init failed: ${String(error)}`, videoId));
 
       // iOS app: a client proven to stream the whole track (iosResolver), before anything else.
-      if (NATIVE_DIRECT) {
+      if (NATIVE_DIRECT && !preferSignedPlayback() && !localStorage.getItem(DEBUG_CLIENTS_KEY)) {
         const base = this.yt;
         const verified = await timed('verified client', videoId, () => resolveVerified(base, videoId)).catch((error: unknown) => {
           trackLog.w(`verified resolve failed: ${describe(error)}`, videoId);
@@ -258,6 +307,9 @@ export class YouTubeEngine {
       }
       throw lastError instanceof Error ? lastError : new Error('No YouTube client could stream this track');
     } catch (error) {
+      // A cached answer that didn't play is not an answer to keep.
+      forgetResponse(videoId, false);
+      forgetResponse(videoId, true);
       if (!(error instanceof SupersededError)) {
         trackLog.e(`load failed: ${describe(error)}`, videoId);
       }
@@ -285,7 +337,9 @@ export class YouTubeEngine {
     this.current = { videoId, client, signed };
     this.direct = null;
 
-    const direct = hasDirectAudio(info);
+    // iOS app: a web client's direct URLs are refused past 1 MiB, its SABR stream
+    // plays whole (seen on a phone): those always go over SABR.
+    const direct = hasDirectAudio(info) && !(NATIVE_DIRECT && usesWebPo(client));
     if (direct && NATIVE_DIRECT) {
       const native = await this.startNative(player, resolved, startSec, autoplay, generation);
       if (native) return native;
@@ -294,6 +348,22 @@ export class YouTubeEngine {
     const manifest = direct ? await this.directManifest(resolved) : await this.sabrManifest(player, resolved);
     this.checkCurrent(generation);
     const mode = direct ? 'direct' : 'SABR';
+    this.sabrSource = direct ? null : resolved;
+    this.nativeUrl = null;
+    const basicInfo = info.basic_info;
+    this.capture =
+      NATIVE_DIRECT && !direct
+        ? {
+            videoId,
+            title: basicInfo.title ?? '',
+            author: basicInfo.author ?? '',
+            duration: basicInfo.duration ?? 0,
+            thumbnail: [...(basicInfo.thumbnail ?? [])].sort((a, b) => b.width - a.width)[0]?.url ?? null,
+            init: null,
+            segments: new Map(),
+            done: false,
+          }
+        : null;
 
     await timed(`${client} ${mode} load`, videoId, () =>
       player.load(`data:application/dash+xml;base64,${btoa(manifest)}`, startSec, 'application/dash+xml'),
@@ -372,6 +442,8 @@ export class YouTubeEngine {
     this.audio.addEventListener('error', this.onNativeError);
     const metadata = new Promise<void>((resolve) => this.audio.addEventListener('loadedmetadata', () => resolve(), { once: true }));
     this.audio.src = `${location.origin}/__net/?u=${encodeURIComponent(url.href)}`;
+    this.nativeUrl = this.audio.src;
+    this.capture = null;
     this.audio.load();
     // Never wait forever: a stream that doesn't start counts as a failure, so the next client gets its turn.
     await timed(`${client} native load`, videoId, () =>
@@ -417,6 +489,89 @@ export class YouTubeEngine {
         mode: 'direct',
       },
       loudnessDb: info.player_config?.audio_config?.loudness_db ?? null,
+    };
+  }
+
+  private collect(type: shaka.net.NetworkingEngine.RequestType, response: shaka.extern.Response, context?: shaka.extern.RequestContext) {
+    const c = this.capture;
+    if (!c || c.done || type !== shaka.net.NetworkingEngine.RequestType.SEGMENT) return;
+    if (c.segments.size % 25 === 0 && c.segments.size > 0) {
+      trackLog.d(`capture: ${context?.type ?? 'no type'} seg=${context?.segment ? context.segment.getStartTime().toFixed(1) : '-'} bytes=${response.data.byteLength} have=${c.segments.size}${c.init ? '+init' : ''}`, c.videoId);
+    }
+    const raw = response.data;
+    const view = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+    const data = view.slice();
+    if (context?.type === shaka.net.NetworkingEngine.AdvancedRequestType.INIT_SEGMENT) {
+      c.init = data;
+    } else if (context?.type === shaka.net.NetworkingEngine.AdvancedRequestType.MEDIA_SEGMENT && context.segment) {
+      const start = context.segment.getStartTime();
+      c.segments.set(Math.round(start * 1000), { start, end: context.segment.getEndTime(), data });
+    } else return;
+    const duration = c.duration || this.player?.seekRange().end || 0;
+    if (!c.init || duration <= 0) return;
+    const parts = [...c.segments.values()].sort((a, b) => a.start - b.start);
+    if (!parts.length || parts[0]!.start > 0.5) return;
+    for (let i = 1; i < parts.length; i++) if (parts[i]!.start > parts[i - 1]!.end + 0.1) return;
+    if (parts[parts.length - 1]!.end < duration - 1) return;
+    c.done = true;
+    const size = c.init.byteLength + parts.reduce((n, p) => n + p.data.byteLength, 0);
+    const file = new Uint8Array(size);
+    file.set(c.init, 0);
+    let at = c.init.byteLength;
+    for (const part of parts) {
+      file.set(part.data, at);
+      at += part.data.byteLength;
+    }
+    trackLog.d(`audio complete for offline: ${parts.length} segments, ${Math.round(size / 1024)} KB`, c.videoId);
+    this.onCaptured(c.videoId, file, { title: c.title, author: c.author, duration, thumbnail: c.thumbnail });
+  }
+
+  /** iOS app: [videoId] from the file saved on the phone (playback/offline.ts), or null when there is none. */
+  private async startLocal(
+    player: shaka.Player,
+    videoId: string,
+    startSec: number,
+    autoplay: boolean,
+    generation: number,
+  ): Promise<LoadedTrack | null> {
+    const saved = offlineTrack(videoId);
+    const src = offlineUrl(videoId);
+    if (!saved || !src) return null;
+    await player.unload();
+    this.adapter?.dispose();
+    this.adapter = null;
+    if (!this.nativeSrc) {
+      await player.detach();
+      this.nativeSrc = true;
+    }
+    const client = 'VISIONOS' as PlayerClientName;
+    this.current = { videoId, client, signed: false };
+    this.direct = null;
+    this.sabrSource = null;
+    this.audio.removeEventListener('error', this.onNativeError);
+    const metadata = new Promise<void>((resolve, reject) => {
+      this.audio.addEventListener('loadedmetadata', () => resolve(), { once: true });
+      this.audio.addEventListener('error', () => reject(new Error(`saved file error ${this.audio.error?.code ?? '?'}`)), { once: true });
+    });
+    this.audio.src = src;
+    this.audio.load();
+    await Promise.race([
+      metadata,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('saved file never loaded')), 5000)),
+    ]);
+    this.checkCurrent(generation);
+    if (startSec > 0) this.audio.currentTime = startSec;
+    if (autoplay) await this.audio.play().catch(() => undefined);
+    return {
+      videoId,
+      title: saved.title,
+      author: saved.artist,
+      durationSec: saved.durationSec || Math.round(this.audio.duration || 0),
+      thumbnails: saved.artworkUrl ? [{ url: saved.artworkUrl, width: 544, height: 544 }] : [],
+      client,
+      format: 'AAC saved on the phone',
+      stream: { codec: 'AAC', itag: null, bitrateKbps: null, sampleRateHz: null, channels: null, mode: 'direct' },
+      loudnessDb: null,
     };
   }
 
@@ -484,6 +639,7 @@ export class YouTubeEngine {
    * manifest cut down to them.
    */
   async videoStream(height: number | null = null): Promise<VideoStream | null> {
+    if (!this.direct && this.sabrSource) return this.sabrVideoStream(this.sabrSource, height);
     const resolved = this.direct;
     if (!resolved) return null;
     const { videoId, client, info, signed } = resolved;
@@ -505,6 +661,75 @@ export class YouTubeEngine {
       manifest_options: { include_thumbnails: false },
     });
     return { videoId, manifest, aspect: largest.width! / largest.height!, heights };
+  }
+
+  /** The picture of a track that plays over SABR: its own SABR session, for the picture's player. */
+  private async sabrVideoStream(resolved: ResolvedPlayer, height: number | null): Promise<VideoStream | null> {
+    const { videoId, info } = resolved;
+    const pictures = (info.streaming_data?.adaptive_formats ?? []).filter((f) => f.has_video && !f.has_audio && f.width && f.height);
+    const largest = [...pictures].sort((a, b) => b.width! * b.height! - a.width! * a.height!)[0];
+    if (!largest || largest.width! / largest.height! < MIN_VIDEO_ASPECT) return null;
+    const heights = [...new Set(pictures.map((f) => f.height!))].sort((a, b) => b - a);
+    const wanted = height !== null && heights.includes(height) ? height : null;
+    const manifest = await info.toDash({
+      format_filter: (format) => !format.has_video || format.has_audio || (wanted !== null && format.height !== wanted),
+      manifest_options: { is_sabr: true, include_thumbnails: false },
+    });
+    return {
+      videoId,
+      manifest,
+      aspect: largest.width! / largest.height!,
+      heights,
+      sabr: async (player) => {
+        const adapter = this.newSabrAdapter(resolved);
+        adapter.attach(player);
+        await this.startSabr(adapter, resolved);
+        return adapter;
+      },
+    };
+  }
+
+  private newSabrAdapter({ yt }: ResolvedPlayer): SabrStreamingAdapter {
+    const sessionClient = yt.session.context.client;
+    return new SabrStreamingAdapter({
+      playerAdapter: new ShakaPlayerAdapter(),
+      clientInfo: {
+        osName: sessionClient.osName,
+        osVersion: sessionClient.osVersion,
+        clientName: parseInt(Constants.CLIENT_NAME_IDS[sessionClient.clientName as keyof typeof Constants.CLIENT_NAME_IDS]),
+        clientVersion: sessionClient.clientVersion,
+      },
+    });
+  }
+
+  /** Tokens, reloads, the streaming URL and formats, for an attached SABR adapter. */
+  private async startSabr(adapter: SabrStreamingAdapter, { videoId, client, info, yt }: ResolvedPlayer): Promise<void> {
+    const streaming = info.streaming_data!;
+    const coldStart = await botguard.coldStartToken(videoId);
+    let webPoToken: string | undefined;
+    let minting = false;
+    adapter.onMintPoToken(async () => {
+      if (!webPoToken && !minting) {
+        minting = true;
+        void botguard.mint(videoId).then((token) => {
+          webPoToken = token;
+          minting = false;
+        });
+      }
+      return webPoToken ?? coldStart;
+    });
+    adapter.onReloadPlayerResponse(async (reloadContext) => {
+      const response = await playerRequest(yt, videoId, client, reloadContext);
+      const reloaded = new YT.VideoInfo([response], yt.actions, Utils.generateRandomString(16));
+      adapter.setStreamingURL(await yt.session.player!.decipher(reloaded.streaming_data?.server_abr_streaming_url));
+      adapter.setUstreamerConfig(
+        (reloaded.player_config ?? info.player_config)?.media_common_config.media_ustreamer_request_config
+          ?.video_playback_ustreamer_config,
+      );
+    });
+    adapter.setStreamingURL(await yt.session.player!.decipher(streaming.server_abr_streaming_url));
+    adapter.setUstreamerConfig(info.player_config?.media_common_config.media_ustreamer_request_config?.video_playback_ustreamer_config);
+    adapter.setServerAbrFormats(streaming.adaptive_formats.map(buildSabrFormat));
   }
 
   /** The SABR session: googlevideo's adapter in front of Shaka (Kira, googlevideo's example). */
@@ -640,6 +865,7 @@ export class YouTubeEngine {
     this.generation++;
     this.current = null;
     this.direct = null;
+    this.sabrSource = null;
     if (this.nativeSrc) {
       this.audio.pause();
       this.audio.removeAttribute('src');
@@ -682,4 +908,94 @@ function describe(error: unknown): string {
     return `Shaka ${error.code}${status}${uri}`;
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * iOS app: asks for [videoId]'s player response ahead of time (the next track
+ * in the queue), as the instance the engine will use, so its start is instant.
+ */
+export async function prefetchTrack(videoId: string): Promise<void> {
+  if (!NATIVE_DIRECT) return;
+  try {
+    const signed = preferSignedPlayback();
+    const yt = signed ? await getSignedInnertube() : await getInnertube();
+    await resolvePlayer(yt, videoId, new Set(), signed);
+    trackLog.d('next track prefetched', videoId);
+  } catch {
+    // Played normally when its turn comes.
+  }
+}
+
+/** iOS app: BotGuard and both sessions up before the first tap. */
+if (NATIVE_DIRECT) {
+  setTimeout(() => {
+    void getInnertube()
+      .then((yt) => botguard.mint(decodeURIComponent(yt.session.context.client.visitorData ?? '')))
+      .catch(() => undefined);
+    if (preferSignedPlayback()) void getSignedInnertube().catch(() => undefined);
+  }, 1200);
+}
+
+/**
+ * iOS app: [videoId]'s audio as a playable file, without playing it: a muted
+ * engine of its own buffers the whole track (SABR, captured as it arrives), or
+ * fetches its direct file. For the ⋯ menu's Download.
+ */
+export function captureTrack(videoId: string): Promise<{ bytes: Uint8Array; meta: { title: string; author: string; duration: number; thumbnail: string | null } }> {
+  const audio = new Audio();
+  audio.muted = true;
+  audio.preload = 'auto';
+  const engine = new YouTubeEngine(audio);
+  engine.bufferAll = true;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('the download took over 4 minutes'));
+      void engine.stop();
+    }, 240_000);
+    engine.onCaptured = (_id, bytes, meta) => {
+      clearTimeout(timer);
+      resolve({ bytes, meta });
+      void engine.stop();
+    };
+    engine
+      .load(videoId, { autoplay: false })
+      .then(async (track) => {
+        // A direct file (no SABR capture): fetched whole through the app's audio cache.
+        if (!engine.nativeUrl) return;
+        // In bounded ranges: googlevideo paces an open-ended read to playback speed.
+        const url = engine.nativeUrl;
+        void engine.stop();
+        const parts: Uint8Array[] = [];
+        let have = 0;
+        let total = Infinity;
+        while (have < total) {
+          const end = Math.min(have + 1024 * 1024, total) - 1;
+          const response = await fetch(url, { headers: { Range: `bytes=${have}-${end}` } });
+          if (response.status !== 206 && response.status !== 200) throw new Error(`HTTP ${response.status} at byte ${have}`);
+          const chunk = new Uint8Array(await response.arrayBuffer());
+          if (!chunk.byteLength) break;
+          const range = /\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
+          total = range ? Number(range[1]) : response.status === 200 ? chunk.byteLength : total;
+          parts.push(chunk);
+          have += chunk.byteLength;
+        }
+        const bytes = new Uint8Array(have);
+        let at = 0;
+        for (const part of parts) {
+          bytes.set(part, at);
+          at += part.byteLength;
+        }
+        clearTimeout(timer);
+        resolve({
+          bytes,
+          meta: { title: track.title, author: track.author, duration: track.durationSec, thumbnail: track.thumbnails[0]?.url ?? null },
+        });
+        void engine.stop();
+      })
+      .catch((error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+        void engine.stop();
+      });
+  });
 }

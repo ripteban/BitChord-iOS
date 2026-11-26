@@ -42,6 +42,16 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
             return
         }
         // URL.path drops the trailing slash: "/__net/?u=…" arrives as "/__net".
+        if url.path.hasPrefix("/__local/") {
+            let videoId = String(url.path.dropFirst("/__local/".count)).removingPercentEncoding ?? ""
+            let file = MainActor.assumeIsolated { OfflineStore.shared.fileURL(videoId) }
+            if let file {
+                serveFile(urlSchemeTask, url: url, file: file, contentType: "audio/mp4")
+            } else {
+                respond(urlSchemeTask, url: url, status: 404, headers: ["Content-Type": "text/plain"], body: Data("Not saved".utf8))
+            }
+            return
+        }
         if url.path == "/__net" || url.path.hasPrefix("/__net/") {
             startProxy(urlSchemeTask, url: url)
         } else {
@@ -63,6 +73,23 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler, URLSessionDataDelega
     }
 
     // MARK: Static files
+
+    /// A file on the phone (a saved track), with byte ranges for the player.
+    private func serveFile(_ task: WKURLSchemeTask, url: URL, file: URL, contentType: String) {
+        guard let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
+            respond(task, url: url, status: 500, headers: ["Content-Type": "text/plain"], body: Data())
+            return
+        }
+        var headers = ["Content-Type": contentType, "Accept-Ranges": "bytes", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"]
+        if let range = task.request.value(forHTTPHeaderField: "Range"), let r = Self.parseRange(range, length: data.count) {
+            headers["Content-Range"] = "bytes \(r.lowerBound)-\(r.upperBound - 1)/\(data.count)"
+            headers["Content-Length"] = String(r.count)
+            respond(task, url: url, status: 206, headers: headers, body: data.subdata(in: r))
+            return
+        }
+        headers["Content-Length"] = String(data.count)
+        respond(task, url: url, status: 200, headers: headers, body: data)
+    }
 
     private func serveFile(_ task: WKURLSchemeTask, url: URL) {
         var path = url.path.removingPercentEncoding ?? url.path

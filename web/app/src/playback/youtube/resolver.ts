@@ -161,7 +161,7 @@ function clientOrder(): readonly PlayerClientName[] {
 const SIGNED_ORDER: readonly PlayerClientName[] = isIOSApp()
   ? // iOS app: VISIONOS doesn't take a signed-in session (HTTP 400, seen on a
     // phone); the web clients do, with PO tokens bound to the account.
-    ['YTMUSIC', 'WEB']
+    ['WEB', 'YTMUSIC']
   : ['YTMUSIC', 'WEB', 'VISIONOS'];
 
 export function clientsFor(videoId: string, signed = false): PlayerClientName[] {
@@ -226,8 +226,10 @@ const BOT_CHECK = /not a bot/;
  * phone carrier's shared address), the next tracks go straight to the signed-in
  * session for a while instead of paying for the refused request each time.
  */
-let botCheckedAt = 0;
-const BOT_CHECK_MEMORY_MS = 30 * 60_000;
+const BOT_CHECK_KEY = 'bitchord:ios:botcheck';
+let botCheckedAt = Number(typeof localStorage === 'undefined' ? 0 : localStorage.getItem(BOT_CHECK_KEY) ?? 0);
+// Hours: a carrier's address stays bot-checked, and every refused ask costs a second at start.
+const BOT_CHECK_MEMORY_MS = 6 * 60 * 60_000;
 
 export function preferSignedPlayback(): boolean {
   return isIOSApp() && Date.now() - botCheckedAt < BOT_CHECK_MEMORY_MS && ytAuthSnapshot().signedIn;
@@ -257,11 +259,42 @@ function permanentReason(status: string | undefined, reason: string | undefined,
  * @param skip clients the caller has already seen fail at the streaming stage.
  * @param signed [yt] is the signed-in instance (getSignedInnertube).
  */
+/**
+ * iOS app: the player responses already had, for an instant start (a replay,
+ * or the next track prefetched while this one plays). googlevideo's URLs last
+ * about six hours; two is well inside that.
+ */
+const RESPONSE_TTL_MS = 2 * 60 * 60_000;
+const responses = new Map<string, { resolved: ResolvedPlayer; at: number }>();
+
+export function forgetResponse(videoId: string, signed: boolean) {
+  responses.delete(keyOf(videoId, signed));
+}
+
 export async function resolvePlayer(
   yt: Innertube,
   videoId: string,
   skip: ReadonlySet<PlayerClientName> = new Set(),
   signed = false,
+): Promise<ResolvedPlayer> {
+  const cached = isIOSApp() ? responses.get(keyOf(videoId, signed)) : undefined;
+  if (cached && Date.now() - cached.at < RESPONSE_TTL_MS && !skip.has(cached.resolved.client) && cached.resolved.yt === yt) {
+    trackLog.d(`${cached.resolved.client} answer reused (${Math.round((Date.now() - cached.at) / 1000)}s old)`, videoId);
+    return cached.resolved;
+  }
+  const resolved = await resolveFresh(yt, videoId, skip, signed);
+  if (isIOSApp()) {
+    if (responses.size > 40) responses.delete(responses.keys().next().value!);
+    responses.set(keyOf(videoId, signed), { resolved, at: Date.now() });
+  }
+  return resolved;
+}
+
+async function resolveFresh(
+  yt: Innertube,
+  videoId: string,
+  skip: ReadonlySet<PlayerClientName>,
+  signed: boolean,
 ): Promise<ResolvedPlayer> {
   const known = knownVerdict(videoId, signed);
   if (known) throw new UnplayableError(known.reason, known.ageGated);
@@ -307,6 +340,7 @@ export async function resolvePlayer(
       // answer, but their streams stop at ~60-70 s): go signed in.
       if (bot && client === 'VISIONOS' && !signed && isIOSApp() && ytAuthSnapshot().signedIn) {
         botCheckedAt = Date.now();
+        localStorage.setItem(BOT_CHECK_KEY, String(botCheckedAt));
         excludeClient(videoId, client, `${status}: ${reason} (${ms}ms); asking again signed in`, signed);
         throw new UnplayableError('YouTube asked to confirm this isn’t a bot; asking again signed in.', true);
       }

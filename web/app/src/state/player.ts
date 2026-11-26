@@ -756,6 +756,10 @@ async function advance(auto: boolean): Promise<void> {
 }
 
 /** Once a track is under way: prune hand-queued tracks already played, and top up AutoPlay. */
+/** For playback/offline.ts: what is playing, without importing the player. */
+(window as Window & { __bitchordNowPlaying?: () => string | null }).__bitchordNowPlaying = () =>
+  usePlayer.getState().nowPlaying?.videoId ?? null;
+
 function afterTrackStarted() {
   const { queue, index } = usePlayer.getState();
   const played = new Set(playedUserQueueIndices(queue.map((e) => e.tier), index));
@@ -766,6 +770,9 @@ function afterTrackStarted() {
     });
   }
   void refillAutoplay();
+  // iOS app: the next track's answer is asked for now, so it starts at once.
+  const next = usePlayer.getState().queue[usePlayer.getState().index + 1];
+  if (next) setTimeout(() => void import('@/playback/youtube/engine').then((m) => m.prefetchTrack(next.track.videoId)), 3000);
 }
 
 // ---- AutoPlay ---------------------------------------------------------------------
