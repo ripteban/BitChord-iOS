@@ -14,7 +14,12 @@ const RESIZABLE = /googleusercontent\.com|ggpht\.com/;
  * Non-square artwork (artist heroes) and i.ytimg.com thumbnails are fixed
  * sizes and pass through unchanged.
  */
+/** i.ytimg.com video thumbnails: the small renditions, which have a 1280px sibling. */
+const YT_THUMB = /(\/vi(?:_webp)?\/[\w-]{11}\/)(default|mqdefault|hqdefault|sddefault|hq720)(\.jpg|\.webp)/;
+
 export function sizedArtwork(url: string, cssPx: number, aspect = 1): string {
+  // A video thumbnail shown large: its maxres sibling (the page falls back to hqdefault if it's missing).
+  if (YT_THUMB.test(url) && cssPx >= 200) return url.replace(YT_THUMB, '$1maxresdefault$3');
   if (!RESIZABLE.test(url) || Math.abs(aspect - 1) > 0.01) return url;
   const dpr = Math.min(typeof window === 'undefined' ? 2 : window.devicePixelRatio || 1, 3);
   const needed = cssPx * dpr;

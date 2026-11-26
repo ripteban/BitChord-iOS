@@ -18,6 +18,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             NSLog("[BitChord] audio session: \(error)")
         }
         application.beginReceivingRemoteControlEvents()
+        Diag.log("launch (\(UIDevice.current.systemVersion))")
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
+            Diag.log("memory warning")
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            Diag.log("background")
+        }
 
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = WebViewController()

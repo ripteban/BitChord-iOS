@@ -103,6 +103,55 @@ final class OfflineStore {
         return entry.json
     }
 
+    // MARK: Saving in pieces (begin, append…, commit), so no single message holds the whole file
+
+    private var partial: [String: URL] = [:]
+
+    func begin(_ videoId: String) {
+        let url = cacheDir.appendingPathComponent("\(Self.safe(videoId)).part")
+        try? fm.removeItem(at: url)
+        fm.createFile(atPath: url.path, contents: nil)
+        partial[videoId] = url
+    }
+
+    func append(_ videoId: String, _ data: Data) throws {
+        guard let url = partial[videoId], let handle = try? FileHandle(forWritingTo: url) else {
+            throw NSError(domain: "Offline", code: 1, userInfo: [NSLocalizedDescriptionKey: "no save in progress"])
+        }
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+    }
+
+    func commit(videoId: String, permanent: Bool, meta: [String: Any]) throws -> [String: Any] {
+        guard let part = partial.removeValue(forKey: videoId) else {
+            throw NSError(domain: "Offline", code: 1, userInfo: [NSLocalizedDescriptionKey: "no save in progress"])
+        }
+        let bytes = (try? fm.attributesOfItem(atPath: part.path)[.size] as? Int) ?? 0
+        guard bytes > 0 else { throw NSError(domain: "Offline", code: 2, userInfo: [NSLocalizedDescriptionKey: "empty file"]) }
+        var entry = Entry(
+            videoId: videoId,
+            title: meta["title"] as? String ?? "",
+            artist: meta["artist"] as? String ?? "",
+            album: meta["album"] as? String,
+            artworkUrl: meta["artworkUrl"] as? String,
+            durationSec: (meta["durationSec"] as? NSNumber)?.doubleValue ?? 0,
+            permanent: permanent,
+            bytes: bytes,
+            savedAt: Date().timeIntervalSince1970 * 1000
+        )
+        if let old = entries[videoId] { try? fm.removeItem(at: file(for: old)) }
+        let target = file(for: entry)
+        try? fm.removeItem(at: target)
+        try fm.moveItem(at: part, to: target)
+        entry.bytes = bytes
+        entries[videoId] = entry
+        if !permanent { trimCache() }
+        persist()
+        Diag.log("offline: \(permanent ? "downloaded" : "cached") \(videoId) (\(bytes / 1024) KB)")
+        return entry.json
+    }
+
     /// A cached track kept for good: moved out of Caches.
     func pin(_ videoId: String) throws -> [String: Any] {
         guard var entry = entries[videoId] else { throw NSError(domain: "Offline", code: 404, userInfo: [NSLocalizedDescriptionKey: "not saved"]) }

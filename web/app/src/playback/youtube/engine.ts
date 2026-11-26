@@ -188,7 +188,7 @@ export class YouTubeEngine {
     if (NATIVE_DIRECT) {
       // Everything played stays in the buffer, so the offline copy is complete by
       // the end; a download's own engine (captureTrack) buffers the whole track.
-      player.configure({ streaming: { bufferBehind: 900, ...(this.bufferAll && { bufferingGoal: 900 }) } });
+      player.configure({ streaming: { bufferBehind: 900, bufferingGoal: 900 } });
       player.getNetworkingEngine()?.registerResponseFilter((type, response, context) => this.collect(type, response, context));
     }
     player.addEventListener('error', (event) => this.onShakaError((event as unknown as { detail: shaka.util.Error }).detail));
@@ -509,6 +509,8 @@ export class YouTubeEngine {
     } else return;
     const duration = c.duration || this.player?.seekRange().end || 0;
     if (!c.init || duration <= 0) return;
+    const covered = [...c.segments.values()].reduce((n, p) => n + (p.end - p.start), 0);
+    void import('../offline').then((m) => m.captureProgress(c.videoId, Math.min(0.99, covered / duration)));
     const parts = [...c.segments.values()].sort((a, b) => a.start - b.start);
     if (!parts.length || parts[0]!.start > 0.5) return;
     for (let i = 1; i < parts.length; i++) if (parts[i]!.start > parts[i - 1]!.end + 0.1) return;
@@ -672,7 +674,8 @@ export class YouTubeEngine {
     const heights = [...new Set(pictures.map((f) => f.height!))].sort((a, b) => b - a);
     const wanted = height !== null && heights.includes(height) ? height : null;
     const manifest = await info.toDash({
-      format_filter: (format) => !format.has_video || format.has_audio || (wanted !== null && format.height !== wanted),
+      // Every audio rendition stays: the picture's SABR requests must name one.
+      format_filter: (format) => format.has_video && (format.has_audio || (wanted !== null && format.height !== wanted)),
       manifest_options: { is_sabr: true, include_thumbnails: false },
     });
     return {
@@ -706,7 +709,11 @@ export class YouTubeEngine {
   private async startSabr(adapter: SabrStreamingAdapter, { videoId, client, info, yt }: ResolvedPlayer): Promise<void> {
     const streaming = info.streaming_data!;
     const coldStart = await botguard.coldStartToken(videoId);
-    let webPoToken: string | undefined;
+    // iOS app: the real token is minted natively in milliseconds; starting on the
+    // cold-start one made googlevideo hold the first audio back for seconds.
+    let webPoToken: string | undefined = NATIVE_DIRECT
+      ? await Promise.race([botguard.mint(videoId), new Promise<undefined>((r) => setTimeout(() => r(undefined), 1500))])
+      : undefined;
     let minting = false;
     adapter.onMintPoToken(async () => {
       if (!webPoToken && !minting) {
@@ -751,7 +758,11 @@ export class YouTubeEngine {
     // once and the real one is minted in the background, so a VOD never
     // waits on BotGuard (Kira).
     const coldStart = await botguard.coldStartToken(videoId);
-    let webPoToken: string | undefined;
+    // iOS app: the real token is minted natively in milliseconds; starting on the
+    // cold-start one made googlevideo hold the first audio back for seconds.
+    let webPoToken: string | undefined = NATIVE_DIRECT
+      ? await Promise.race([botguard.mint(videoId), new Promise<undefined>((r) => setTimeout(() => r(undefined), 1500))])
+      : undefined;
     let minting = false;
     adapter.onMintPoToken(async () => {
       if (!webPoToken && !minting) {

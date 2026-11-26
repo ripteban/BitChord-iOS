@@ -84,6 +84,7 @@ async function httpExchange(p, ytApi) {
 const ok = (result) => ({ ok: true, result });
 /** The iOS app's offline store, in memory. */
 const offline = new Map();
+const partials = new Map();
 const fail = (code, message) => ({ ok: false, error: { code, message } });
 
 async function bridge(method, params) {
@@ -103,6 +104,17 @@ async function bridge(method, params) {
           bytes: data.length, savedAt: Date.now(), data };
         offline.set(params.videoId, entry);
         console.log(`[offline] saved ${params.videoId} ${data.length} bytes permanent=${entry.permanent}`);
+        const { data: _, ...meta } = entry; return ok(meta);
+      }
+      case 'ios.offlineBegin': partials.set(params.videoId, []); return ok({});
+      case 'ios.offlineAppend': partials.get(params.videoId)?.push(Buffer.from(params.data, 'base64')); return ok({});
+      case 'ios.offlineCommit': {
+        const data = Buffer.concat(partials.get(params.videoId) ?? []); partials.delete(params.videoId);
+        const entry = { videoId: params.videoId, title: params.title, artist: params.artist, album: params.album ?? null,
+          artworkUrl: params.artworkUrl ?? null, durationSec: params.durationSec ?? 0, permanent: !!params.permanent,
+          bytes: data.length, savedAt: Date.now(), data };
+        offline.set(params.videoId, entry);
+        console.log(`[offline] committed ${params.videoId} ${data.length} bytes permanent=${entry.permanent}`);
         const { data: _, ...meta } = entry; return ok(meta);
       }
       case 'ios.offlinePin': { const e = offline.get(params.videoId); if (!e) return fail('internal', 'not saved'); e.permanent = true; const { data: _, ...meta } = e; return ok(meta); }

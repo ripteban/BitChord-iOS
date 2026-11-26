@@ -144,6 +144,18 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
                       let data = Data(base64Encoded: b64), !data.isEmpty
                 else { return fail("internal", "ios.offlineSave needs a videoId and data") }
                 return ok(try OfflineStore.shared.save(videoId: videoId, data: data, permanent: params["permanent"] as? Bool == true, meta: params))
+            case "ios.offlineBegin":
+                OfflineStore.shared.begin(params["videoId"] as? String ?? "")
+                return ok([String: Any]())
+            case "ios.offlineAppend":
+                guard let b64 = params["data"] as? String, let data = Data(base64Encoded: b64) else {
+                    return fail("internal", "ios.offlineAppend needs data")
+                }
+                try OfflineStore.shared.append(params["videoId"] as? String ?? "", data)
+                return ok([String: Any]())
+            case "ios.offlineCommit":
+                return ok(try OfflineStore.shared.commit(
+                    videoId: params["videoId"] as? String ?? "", permanent: params["permanent"] as? Bool == true, meta: params))
             case "ios.offlinePin":
                 return ok(try OfflineStore.shared.pin(params["videoId"] as? String ?? ""))
             case "ios.offlineDelete":

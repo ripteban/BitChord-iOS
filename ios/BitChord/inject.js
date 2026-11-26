@@ -150,6 +150,14 @@ ${a.stack}` : typeof a === 'string' ? a : JSON.stringify(a)))
     return nativePlay.apply(this, args);
   };
 
+  // ---- artwork: a video's maxres thumbnail doesn't always exist; fall back to hqdefault.
+  document.addEventListener('error', (event) => {
+    const img = event.target;
+    if (img instanceof HTMLImageElement && img.src.includes('/maxresdefault.')) {
+      img.src = img.src.replace('/maxresdefault.', '/hqdefault.');
+    }
+  }, true);
+
   // ---- network --------------------------------------------------------------
   const SKIP_HOSTS = /(^|\.)(fonts\.googleapis\.com|fonts\.gstatic\.com)$/i;
   const proxyURL = (url) => `${ORIGIN}/__net/?u=${encodeURIComponent(url)}`;

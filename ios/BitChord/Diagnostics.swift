@@ -6,6 +6,21 @@ import WebKit
 enum Diag {
     private static var lines: [String] = []
     private static let lock = NSLock()
+    private static let folder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+    private static let currentFile = folder.appendingPathComponent("diag-current.log")
+    private static let previousFile = folder.appendingPathComponent("diag-previous.log")
+    /// The last session's log (it may have ended in a crash), read once at launch.
+    static let previousSession: String = {
+        let fm = FileManager.default
+        try? fm.removeItem(at: previousFile)
+        try? fm.moveItem(at: currentFile, to: previousFile)
+        fm.createFile(atPath: currentFile.path, contents: nil)
+        return (try? String(contentsOf: previousFile, encoding: .utf8)) ?? ""
+    }()
+    private static let handle: FileHandle? = {
+        _ = previousSession
+        return try? FileHandle(forWritingTo: currentFile)
+    }()
     private static let clock: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
@@ -17,6 +32,10 @@ enum Diag {
         lock.lock()
         lines.append(line)
         if lines.count > 300 { lines.removeFirst(lines.count - 300) }
+        if let handle {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data((line + "\n").utf8))
+        }
         lock.unlock()
         if WebViewController.diagnostics { NSLog("[BitChord] %@", message) }
     }
@@ -89,7 +108,9 @@ final class DiagnosticsViewController: UIViewController {
         webView.evaluateJavaScript("window.__bitchordDiag ? window.__bitchordDiag() : 'sin registro'") { [weak self] result, error in
             answered = true
             let page = (result as? String) ?? "error: \(String(describing: error))"
+            let previous = Diag.previousSession.split(separator: "\n").suffix(60).joined(separator: "\n")
             self?.textView.text = header + "\n\n== Página ==\n" + page + "\n\n== App ==\n" + native
+                + (previous.isEmpty ? "" : "\n\n== Sesión anterior (antes del último cierre) ==\n" + previous)
             self?.textView.scrollRangeToVisible(NSRange(location: max(0, (self?.textView.text.utf16.count ?? 1) - 1), length: 1))
         }
     }

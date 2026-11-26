@@ -86,6 +86,7 @@ export function saveOffline(meta: OfflineMeta, permanent: boolean): Promise<void
   if (!offlineAvailable()) return Promise.resolve();
   const existing = offlineTrack(meta.videoId);
   if (existing && (existing.permanent || !permanent)) return Promise.resolve();
+  if (!permanent && running.has(meta.videoId)) return running.get(meta.videoId)!;
   if (existing && permanent) {
     return call<OfflineTrack>('ios.offlinePin', { videoId: meta.videoId }).then((track) => {
       useOffline.setState((s) => ({ tracks: { ...s.tracks, [track.videoId]: track } }));
@@ -95,7 +96,13 @@ export function saveOffline(meta: OfflineMeta, permanent: boolean): Promise<void
   const playing = (window as Window & { __bitchordNowPlaying?: () => string | null }).__bitchordNowPlaying?.();
   if (playing === meta.videoId && !running.has(meta.videoId)) {
     keep.add(meta.videoId);
-    useOffline.setState((s) => ({ saving: { ...s.saving, [meta.videoId]: 0.5 } }));
+    useOffline.setState((s) => ({ saving: { ...s.saving, [meta.videoId]: s.saving[meta.videoId] ?? 0 } }));
+    // If the stream's own copy hasn't finished in a minute and a half, a download of its own takes over.
+    setTimeout(() => {
+      if (offlineTrack(meta.videoId)?.permanent || running.has(meta.videoId)) return;
+      keep.delete(meta.videoId);
+      void saveOffline(meta, true).catch(() => undefined);
+    }, 90_000);
     return Promise.resolve();
   }
   const known = running.get(meta.videoId);
@@ -154,15 +161,26 @@ async function download(meta: OfflineMeta, permanent: boolean): Promise<void> {
 /** Tracks the user asked to keep (Download) while they were already being captured. */
 const keep = new Set<string>();
 
+/** The engine's capture of [videoId] has [fraction] of the track: shown while a Download waits on it. */
+export function captureProgress(videoId: string, fraction: number): void {
+  if (useOffline.getState().saving[videoId] === undefined) return;
+  useOffline.setState((s) => ({ saving: { ...s.saving, [videoId]: fraction } }));
+}
+
 async function store(
   videoId: string,
   bytes: Uint8Array,
   permanent: boolean,
   meta: { title: string; artist: string; album: string | null; artworkUrl: string | null; durationSec: number },
 ): Promise<void> {
-  const saved = await call<OfflineTrack>('ios.offlineSave', {
+  // In pieces: one multi-megabyte string over the bridge strained the page's memory.
+  const PIECE = 1024 * 1024;
+  await call('ios.offlineBegin', { videoId });
+  for (let at = 0; at < bytes.byteLength; at += PIECE) {
+    await call('ios.offlineAppend', { videoId, data: toBase64(bytes.subarray(at, at + PIECE)) });
+  }
+  const saved = await call<OfflineTrack>('ios.offlineCommit', {
     videoId,
-    data: toBase64(bytes),
     permanent: permanent || keep.has(videoId),
     ...meta,
   });

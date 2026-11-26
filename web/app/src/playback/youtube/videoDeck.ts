@@ -129,7 +129,11 @@ async function refresh(): Promise<void> {
   try {
     const shakaPlayer = await ensurePlayer();
     configureQuality(shakaPlayer, quality);
-    // A track playing over SABR: the picture gets its own SABR session.
+    // A track playing over SABR: the picture gets its own SABR session. Its
+    // requests must name an audio format as well, or googlevideo never answers
+    // (timeouts, Shaka 1003); the element is muted, the audio is the main player's.
+    video.muted = true;
+    shakaPlayer.configure({ manifest: { disableAudio: !stream.sabr } });
     if (stream.sabr) sabrAdapter = await stream.sabr(shakaPlayer);
     await shakaPlayer.load(`data:application/dash+xml;base64,${btoa(stream.manifest)}`, resumeAt, 'application/dash+xml');
     if (run !== generation) return;
